@@ -1,18 +1,28 @@
 # PMS Generator (new)
 
 Step 1 starter — same look as the previous PMS Generator project, with the
-four dropdown lists sourced from the reference Excel
-(`Pipe Class Sheets-With Tubing-updated.xlsx`) and stored as JSON.
+four dropdown lists and the §5.5 class-naming rules sourced from the
+reference Excel (`Pipe Class Sheets-With Tubing-updated.xlsx`) and stored
+as JSON.
 
-## Lists (single source of truth)
+## Data files (single source of truth)
 
-- `app/data/pressure_ratings.json`
-- `app/data/materials.json`
-- `app/data/corrosion_allowances.json`
-- `app/data/services.json` — `allow_custom: true` lights up the "Other (custom)" row in the picker
+- `app/data/pressure_ratings.json` — dropdown list of pressure ratings
+- `app/data/materials.json` — dropdown list of pipe materials
+- `app/data/corrosion_allowances.json` — dropdown list of CAs
+- `app/data/services.json` — services + `allow_custom: true` for the "Other (custom)" row
+- `app/data/class_naming.json` — §5.5 rules: rating-letter table, material/CA → digit table, suffix rules (`L` for LTCS, `N` for NACE, auto-NACE for CS+6 mm)
 
-Edit a JSON file, refresh the browser, the dropdown updates. The Excel
-itself is **not** copied into this project.
+Edit a JSON file, refresh the browser, the dropdown / resolver updates.
+The Excel itself is **not** copied into this project.
+
+## Class resolution
+
+When the user picks Rating + Material + Corrosion Allowance, the form
+calls `POST /api/resolve-class`, which derives the §5.5 class code (e.g.
+`A1`, `F1LN`, `T80`) from the JSON rules alone — no catalogue lookup.
+A new combination not in the original Excel still resolves correctly
+(e.g. `1500# / CuNi / NIL → F30`).
 
 ## Run
 
@@ -35,6 +45,7 @@ Open <http://localhost:8004/>.
 | `GET`  | `/api/options/materials` | `{ materials: [...] }` |
 | `GET`  | `/api/options/corrosion-allowances` | `{ corrosion_allowances: [...] }` |
 | `GET`  | `/api/options/services` | `{ services: [...], allow_custom: true }` |
+| `POST` | `/api/resolve-class` | `{ class_code, letter, digit, suffix, note }` from `{rating, material, corrosion_allowance, service}` |
 | `GET`  | `/health` | health probe |
 
 ## Re-extracting the lists

@@ -629,7 +629,7 @@ label.multi-select-option > span { flex: 1; }
 
 /* ================================================================
    CLASS RESOLUTION CARD — appears once Rating + Material + CA chosen.
-   Two states: catalogued (green accent) and derived/new (amber accent).
+   Two states: `derived` (success, amber) and `error` (red).
    ================================================================ */
 .resolution-card {
     margin-top: 18px;
@@ -643,10 +643,8 @@ label.multi-select-option > span { flex: 1; }
     gap: 8px;
     border-left: 4px solid var(--text-muted);
 }
-.resolution-card.catalogued    { border-left-color: #059669; background: #f0fdf4; }
-.resolution-card.derived       { border-left-color: #d97706; background: #fffbeb; }
-.resolution-card.has-variants  { border-left-color: #0284c7; background: #f0f9ff; }
-.resolution-card.error         { border-left-color: #dc2626; background: #fef2f2; }
+.resolution-card.derived  { border-left-color: #d97706; background: #fffbeb; }
+.resolution-card.error    { border-left-color: #dc2626; background: #fef2f2; }
 .resolution-header {
     display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
 }
@@ -667,10 +665,8 @@ label.multi-select-option > span { flex: 1; }
     letter-spacing: 0.5px;
     color: #ffffff;
 }
-.resolution-tag.catalogued   { background: #059669; }
-.resolution-tag.derived      { background: #d97706; }
-.resolution-tag.has-variants { background: #0284c7; }
-.resolution-tag.error        { background: #dc2626; }
+.resolution-tag.derived  { background: #d97706; }
+.resolution-tag.error    { background: #dc2626; }
 .resolution-note {
     color: var(--text-secondary);
     font-size: 0.85rem;
@@ -682,19 +678,6 @@ label.multi-select-option > span { flex: 1; }
     margin-top: 6px;
 }
 .resolution-meta b { color: var(--text-secondary); font-weight: 600; }
-.resolution-variants {
-    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;
-}
-.resolution-variant-pill {
-    padding: 4px 10px;
-    background: #ffffff;
-    border: 1px solid #bae6fd;
-    color: #0369a1;
-    border-radius: 999px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    cursor: default;
-}
 
 /* ================================================================
    PMS CODE BANNER — Clean professional style

@@ -1,24 +1,19 @@
 """Resolve a (rating, material, corrosion allowance) selection to a §5.5
-class code, and check whether that combination is in the catalogue extracted
-from the reference Excel.
+class code. Pure derivation — every catalogued class in the project Excel
+follows the same naming convention, so the rules in `class_naming.json`
+cover both catalogued and brand-new combinations identically.
 
-All the rules live in JSON:
-  • app/data/class_naming.json    — rating letters, material/CA digits, suffix rules
-  • app/data/class_catalogue.json — the 91 classes from the Excel INDEX sheet
-
-So extending support to a new material is a JSON edit, not a code change.
+All rules live in JSON:
+  • app/data/class_naming.json — rating letters, material/CA digits, suffix rules
 
 Returned shape (see `resolve()`):
     {
-        "class_code":  "A1",          # always — even when not catalogued
+        "class_code":  "A1",
         "letter":      "A",
         "digit":       "1",
         "suffix":      "",
-        "catalogued":  True,
-        "catalogue_match":  {...}     # original row, when catalogued
-        "catalogue_variants": [...]   # extra catalogued rows sharing the base code (T80 → T80A/B/C)
-        "in_excel":    True,
-        "note":        "...",
+        "service":     "",
+        "note":        "Derived from §5.5 rules.",
     }
 """
 from __future__ import annotations
@@ -26,14 +21,13 @@ from __future__ import annotations
 import json
 import re
 from functools import lru_cache
-from pathlib import Path
 from typing import Optional
 
 from app.config import settings
 
 
 class ResolutionError(ValueError):
-    """The user's selection can't even be assembled into a §5.5 code."""
+    """The user's selection can't be assembled into a §5.5 code."""
 
 
 # ---------------------------------------------------------------------------
@@ -45,17 +39,10 @@ def _naming_rules() -> dict:
     return json.loads((settings.data_dir / "class_naming.json").read_text(encoding="utf-8"))
 
 
-@lru_cache(maxsize=1)
-def _catalogue() -> list[dict]:
-    raw = json.loads((settings.data_dir / "class_catalogue.json").read_text(encoding="utf-8"))
-    return raw.get("classes", [])
-
-
 def reload() -> None:
     """Drop cached JSON. Tests / re-extract calls clear via this so the
-    next request re-reads the files without restarting the server."""
+    next request re-reads the file without restarting the server."""
     _naming_rules.cache_clear()
-    _catalogue.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +123,7 @@ def derive_digit(material: str, ca: str) -> str:
 
 def derive_suffix(material: str, ca: str) -> str:
     """'L' for LTCS, 'N' for NACE, 'LN' for both. Includes the CS+6mm
-    auto-NACE promotion rule the Excel uses."""
+    auto-NACE promotion rule the project Excel uses."""
     rules = _naming_rules()["suffix_rules"]
     base, is_nace, is_low = _material_token(material)
     ca_tok = _ca_token(ca)
@@ -167,69 +154,15 @@ def derive_class_code(rating: str, material: str, ca: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Catalogue lookup
-# ---------------------------------------------------------------------------
-
-def _classes_by_code() -> dict[str, list[dict]]:
-    """Group catalogue rows by uppercase class code so 'a1' lookups still hit."""
-    out: dict[str, list[dict]] = {}
-    for entry in _catalogue():
-        out.setdefault(entry["class_code"].upper(), []).append(entry)
-    return out
-
-
-def _find_variants(base_code: str) -> list[dict]:
-    """Catalogue rows whose code shares this base — used for tubings (T80 →
-    T80A/B/C). Match is exact base + optional single trailing letter."""
-    pattern = re.compile(rf"^{re.escape(base_code.upper())}[A-Z]?$")
-    return [c for c in _catalogue() if pattern.match(c["class_code"].upper())]
-
-
 def resolve(rating: str, material: str, ca: str, service: Optional[str] = None) -> dict:
     """Main entry point.
 
-    Always returns a dict with `class_code` plus catalogue flags. Raises
-    ResolutionError only when §5.5 itself can't accept the inputs (unknown
-    rating or unknown material/CA pair)."""
+    Returns the §5.5 class code plus its parts. Raises ResolutionError when
+    the inputs don't fit the rules (unknown rating, or unknown material/CA
+    pair — extend `class_naming.json` to fix)."""
     parts = derive_class_code(rating, material, ca)
-    code  = parts["class_code"]
-    code_upper = code.upper()
-
-    by_code = _classes_by_code()
-    exact = by_code.get(code_upper, [])
-    variants: list[dict] = []
-    if not exact:
-        variants = _find_variants(code)
-
-    catalogued   = bool(exact)
-    has_variants = bool(variants) and not catalogued
-
-    note = ""
-    if catalogued:
-        note = f"{code} exists in the Excel catalogue."
-    elif has_variants:
-        codes = ", ".join(sorted({v["class_code"] for v in variants}))
-        note = (
-            f"{code} is the §5.5 base code, but the Excel only lists tier "
-            f"variants: {codes}. Pick a variant for an exact match, or "
-            f"treat {code} as the family name."
-        )
-    else:
-        note = (
-            f"{code} is not in the current Excel catalogue — derived from §5.5 "
-            f"naming rules. The combination is valid, just new."
-        )
-
     return {
-        "class_code":          code,
-        "letter":              parts["letter"],
-        "digit":               parts["digit"],
-        "suffix":              parts["suffix"],
-        "catalogued":          catalogued,
-        "in_excel":            catalogued or has_variants,
-        "catalogue_match":     exact[0] if exact else None,
-        "catalogue_variants":  [v["class_code"] for v in variants],
-        "service":             (service or "").strip(),
-        "note":                note,
+        **parts,
+        "service": (service or "").strip(),
+        "note":    f"Class {parts['class_code']} derived from §5.5 naming rules.",
     }

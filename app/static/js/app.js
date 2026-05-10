@@ -194,54 +194,26 @@ function escapeHtml(s) {
 
 function renderResolution(panel, data) {
     panel.style.display = 'block';
-    panel.classList.remove('catalogued', 'derived', 'has-variants', 'error');
-
-    let stateClass = 'derived';
-    let tagText    = 'Not in Excel — derived';
-    if (data.catalogued) {
-        stateClass = 'catalogued';
-        tagText    = 'In catalogue';
-    } else if (data.catalogue_variants && data.catalogue_variants.length) {
-        stateClass = 'has-variants';
-        tagText    = 'Family — variants exist';
-    }
-    panel.classList.add(stateClass);
-
-    const matchLine = data.catalogue_match
-        ? `<div class="resolution-meta">
-              <span><b>Excel rating:</b> ${escapeHtml(data.catalogue_match.rating)}</span>
-              <span><b>Excel material:</b> ${escapeHtml(data.catalogue_match.material)}</span>
-              <span><b>Excel CA:</b> ${escapeHtml(data.catalogue_match.corrosion_allowance)}</span>
-           </div>`
-        : '';
-
-    const variantsLine = (data.catalogue_variants && data.catalogue_variants.length)
-        ? `<div class="resolution-variants">${
-            data.catalogue_variants.map(c => `<span class="resolution-variant-pill">${escapeHtml(c)}</span>`).join('')
-          }</div>`
-        : '';
-
-    const partsLine = `<div class="resolution-meta">
-        <span><b>Letter:</b> ${escapeHtml(data.letter)}</span>
-        <span><b>Digit:</b> ${escapeHtml(data.digit)}</span>
-        <span><b>Suffix:</b> ${escapeHtml(data.suffix || '—')}</span>
-    </div>`;
+    panel.classList.remove('derived', 'error');
+    panel.classList.add('derived');
 
     panel.innerHTML = `
         <div class="resolution-header">
             <span class="resolution-code">${escapeHtml(data.class_code)}</span>
-            <span class="resolution-tag ${stateClass}">${escapeHtml(tagText)}</span>
+            <span class="resolution-tag derived">Derived from §5.5</span>
         </div>
         <div class="resolution-note">${escapeHtml(data.note)}</div>
-        ${partsLine}
-        ${matchLine}
-        ${variantsLine}
+        <div class="resolution-meta">
+            <span><b>Letter:</b> ${escapeHtml(data.letter)}</span>
+            <span><b>Digit:</b> ${escapeHtml(data.digit)}</span>
+            <span><b>Suffix:</b> ${escapeHtml(data.suffix || '—')}</span>
+        </div>
     `;
 }
 
 function renderResolutionError(panel, message) {
     panel.style.display = 'block';
-    panel.classList.remove('catalogued', 'derived', 'has-variants');
+    panel.classList.remove('derived');
     panel.classList.add('error');
     panel.innerHTML = `
         <div class="resolution-header">
