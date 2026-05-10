@@ -1,0 +1,24 @@
+{
+  "materials": [
+    "CS",
+    "CS NACE",
+    "LTCS",
+    "LTCS NACE",
+    "CS GALV (Valve: SS)",
+    "CS GALV",
+    "CS - Epoxy Lined",
+    "SS316L",
+    "SS316L NACE",
+    "DSS",
+    "DSS NACE",
+    "SDSS",
+    "SDSS NACE",
+    "CuNi (Valve: NAB)",
+    "Copper",
+    "GRE (Valve: NAB)",
+    "CPVC (Valve: NAB)",
+    "TITANIUM",
+    "SS 316 / 316L (Tubing)",
+    "6 MO Tubing"
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "rating_letters": {
+    "150#": "A",
+    "300#": "B",
+    "600#": "D",
+    "900#": "E",
+    "1500#": "F",
+    "2500#": "G",
+    "5000#": "J",
+    "10000#": "K",
+    "EEMUA 20 bar": "A",
+    "Tubing": "T"
+  },
+  "material_digits": [
+    {
+      "material": "CS",
+      "ca": "3",
+      "digit": "1"
+    },
+    {
+      "material": "CS",
+      "ca": "6",
+      "digit": "2"
+    },
+    {
+      "material": "CS GALV",
+      "ca": "3",
+      "digit": "3"
+    },
+    {
+      "material": "CS GALV",
+      "ca": "1.5",
+      "digit": "4"
+    },
+    {
+      "material": "CS GALV",
+      "ca": "6",
+      "digit": "5"
+    },
+    {
+      "material": "CS - Epoxy Lined",
+      "ca": "6",
+      "digit": "6"
+    },
+    {
+      "material": "CS Internally Coated",
+      "ca": "6",
+      "digit": "6"
+    },
+    {
+      "material": "SS316",
+      "ca": "NIL",
+      "digit": "9"
+    },
+    {
+      "material": "SS316L",
+      "ca": "NIL",
+      "digit": "10"
+    },
+    {
+      "material": "DSS",
+      "ca": "NIL",
+      "digit": "20"
+    },
+    {
+      "material": "SDSS",
+      "ca": "NIL",
+      "digit": "25"
+    },
+    {
+      "material": "CuNi",
+      "ca": "NIL",
+      "digit": "30"
+    },
+    {
+      "material": "90/10 CuNi",
+      "ca": "NIL",
+      "digit": "30"
+    },
+    {
+      "material": "Copper",
+      "ca": "NIL",
+      "digit": "40"
+    },
+    {
+      "material": "GRE",
+      "ca": "NIL",
+      "digit": "50"
+    },
+    {
+      "material": "GRV",
+      "ca": "NIL",
+      "digit": "51"
+    },
+    {
+      "material": "CPVC",
+      "ca": "NIL",
+      "digit": "60"
+    },
+    {
+      "material": "TITANIUM",
+      "ca": "NIL",
+      "digit": "70"
+    },
+    {
+      "material": "SS 316 / 316L (Tubing)",
+      "ca": "NIL",
+      "digit": "80"
+    },
+    {
+      "material": "6 MO Tubing",
+      "ca": "NIL",
+      "digit": "90"
+    }
+  ],
+  "suffix_rules": {
+    "low_temp_marker": "LTCS",
+    "low_temp_suffix": "L",
+    "nace_marker": "NACE",
+    "nace_suffix": "N",
+    "auto_nace_combos": [
+      {
+        "material": "CS",
+        "ca": "6"
+      }
+    ]
+  }
+}

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PMS Generator</title>
+    <link rel="icon" type="image/png" href="/static/images/logo.png">
+    <link rel="stylesheet" href="/static/css/styles.css?v=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="top-nav">
+        <div class="nav-left">
+            <div class="logo">
+                <img src="/static/images/logo.png" alt="Logo" class="logo-img" onerror="this.style.display='none'">
+                <div class="logo-divider"></div>
+                <div>
+                    <div class="logo-text">PMS Generator</div>
+                    <div class="logo-subtitle">Piping Material Specification</div>
+                </div>
+            </div>
+        </div>
+        <nav class="nav-tabs">
+            <a href="#" class="nav-tab active" data-tab="generate">Generate PMS</a>
+        </nav>
+        <div class="nav-right">
+            <div class="api-badge" id="apiBadge"><span class="dot"></span> API</div>
+        </div>
+    </header>
+
+    <main class="main">
+        <section class="tab-panel active" id="tab-generate">
+
+            <div class="step-card">
+                <div class="step-badge">1</div>
+                <div class="step-header">
+                    <h2>PMS Identification</h2>
+                    <p>Select the piping class and material parameters for your specification.</p>
+                </div>
+
+                <div class="card">
+                    <form id="pmsForm" class="form-grid-4">
+                        <div class="form-group">
+                            <label for="pipingClass">Pressure Rating *</label>
+                            <select id="pipingClass" required>
+                                <option value="">-- Select Rating --</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="material">Material *</label>
+                            <select id="material" required>
+                                <option value="">-- Select Material --</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="corrosionAllowance">Corrosion Allowance *</label>
+                            <select id="corrosionAllowance" required>
+                                <option value="">-- Select C.A. --</option>
+                            </select>
+                        </div>
+                        <div class="form-group full-width">
+                            <label for="serviceTrigger">Service Description *</label>
+                            <div class="multi-select" id="serviceMultiSelect">
+                                <button type="button" class="multi-select-trigger" id="serviceTrigger" aria-haspopup="listbox" aria-expanded="false">
+                                    <span class="multi-select-label placeholder" id="serviceLabel">Select one or more services…</span>
+                                    <span class="multi-select-arrow">&#9662;</span>
+                                </button>
+                                <div class="multi-select-panel" id="servicePanel" role="listbox" aria-multiselectable="true"></div>
+                                <input type="text" id="serviceOtherInput" class="multi-select-other-input" placeholder="Type your custom service description" style="display:none">
+                            </div>
+                            <input type="hidden" id="service" required>
+                        </div>
+                        <div class="form-actions full-width">
+                            <button type="submit" class="btn btn-primary" id="generateBtn">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                                Generate PMS
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Class resolution panel — populated by app.js whenever
+                     Rating + Material + Corrosion Allowance are all chosen.
+                     Shows the §5.5 class code and whether it's catalogued
+                     in the Excel or a derived (new) combination. -->
+                <div id="classResolution" class="resolution-card" style="display:none"></div>
+            </div>
+
+        </section>
+    </main>
+
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-box">
+            <div class="spinner"></div>
+            <p id="loadingText">Loading...</p>
+        </div>
+    </div>
+
+    <div class="toast-container" id="toastContainer"></div>
+
+    <footer class="footer-bar"></footer>
+
+    <script src="/static/js/app.js?v=1"></script>
+</body>
+</html>

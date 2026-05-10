@@ -1,0 +1,54 @@
+"""Read-only endpoints that serve dropdown lists out of /app/data/*.json.
+
+The four files are the single source of truth for the Step 1 form. Editing a
+JSON file and refreshing the browser is enough — no code changes needed."""
+import json
+from functools import lru_cache
+
+from fastapi import APIRouter, HTTPException
+
+from app.config import settings
+
+
+router = APIRouter(prefix="/api", tags=["options"])
+
+
+@lru_cache(maxsize=8)
+def _load(filename: str) -> dict:
+    path = settings.data_dir / filename
+    if not path.exists():
+        raise HTTPException(status_code=500, detail=f"Missing data file: {filename}")
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+@router.get("/options/pressure-ratings")
+def pressure_ratings() -> dict:
+    return _load("pressure_ratings.json")
+
+
+@router.get("/options/materials")
+def materials() -> dict:
+    return _load("materials.json")
+
+
+@router.get("/options/corrosion-allowances")
+def corrosion_allowances() -> dict:
+    return _load("corrosion_allowances.json")
+
+
+@router.get("/options/services")
+def services() -> dict:
+    return _load("services.json")
+
+
+@router.get("/options/all")
+def all_options() -> dict:
+    """One round-trip for the form to populate every dropdown at once."""
+    return {
+        "pressure_ratings": _load("pressure_ratings.json")["ratings"],
+        "materials": _load("materials.json")["materials"],
+        "corrosion_allowances": _load("corrosion_allowances.json")["corrosion_allowances"],
+        "services": _load("services.json")["services"],
+        "services_allow_custom": _load("services.json").get("allow_custom", True),
+    }
