@@ -30,20 +30,48 @@ def reload() -> None:
     _data.cache_clear()
 
 
-def detect_table(material: str) -> Optional[str]:
+# Project pipe-grade promotions. The Step 1 dropdown only carries the
+# material *family* (CS / CS NACE / LTCS / ...), but the actual pipe grade
+# specced for a class depends on rating too. These rules promote a default
+# table to a different one when the (rating, material) pair has a known
+# project convention. Verified against the project Excel
+# (20171-SPOG-80000-PP-CL-0001) — F1N / G1N / F2N / G2N ship as API 5L X60.
+_PROMOTION_RULES = [
+    # (rating_pattern, material_pattern, promote_to_table, reason)
+    (
+        re.compile(r"^\s*(1500|2500)\s*#?\s*$", re.I),
+        re.compile(r"(?i)^\s*CS\s*NACE\s*$"),
+        "API5LX60",
+        "1500#/2500# CS NACE — project specs API 5L X60 PSL-2 instead of A106 Gr B",
+    ),
+]
+
+
+def detect_table(material: str, rating: Optional[str] = None) -> Optional[str]:
     """Run the priority-ordered regex chain against `material` and return the
-    first matching table key. Returns None when no rule matches (only
-    happens if the catch-all default rule is removed)."""
+    first matching table key. When `rating` is supplied, project-specific
+    promotion rules run first — e.g. high-pressure CS NACE classes get
+    routed to API 5L X60 instead of the default A106 Gr B table.
+
+    Returns None when no rule matches (only happens if the catch-all
+    default rule is removed)."""
     if not material:
         return None
+
+    if rating:
+        for rt_rx, mat_rx, target, _reason in _PROMOTION_RULES:
+            if rt_rx.search(rating) and mat_rx.search(material):
+                return target
+
     for rule in _data().get("spec_match_priority", []):
         if re.search(rule["pattern"], material):
             return rule["table"]
     return None
 
 
-def lookup(material: str, temp_c: float) -> Optional[dict]:
-    """Compute S at (material, temp_c).
+def lookup(material: str, temp_c: float, rating: Optional[str] = None) -> Optional[dict]:
+    """Compute S at (material, temp_c). Pass `rating` so project pipe-grade
+    promotions kick in (e.g. 1500#/2500# CS NACE → X60).
 
     Returns:
         {
@@ -63,7 +91,7 @@ def lookup(material: str, temp_c: float) -> Optional[dict]:
     if material is None or temp_c is None:
         return None
 
-    table_key = detect_table(material)
+    table_key = detect_table(material, rating)
     if not table_key:
         return None
 

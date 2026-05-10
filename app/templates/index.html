@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PMS Generator</title>
     <link rel="icon" type="image/png" href="/static/images/logo.png">
-    <link rel="stylesheet" href="/static/css/styles.css?v=11">
+    <link rel="stylesheet" href="/static/css/styles.css?v=14">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -245,6 +245,33 @@
                             <div class="kv-list" id="rCodeFactorsList"></div>
                         </div>
                     </div>
+
+                    <!-- Wall Thickness Calculation Table — column headers
+                         only for now. Rows will be populated when the
+                         per-NPS calculation pipeline is wired. -->
+                    <h3 class="section-title" style="margin-top:24px">Wall Thickness Calculation Table</h3>
+                    <div class="wt-table-wrap">
+                        <table class="wt-table" id="rWallThicknessTable">
+                            <thead>
+                                <tr>
+                                    <th>NPS</th>
+                                    <th>D<br><span class="wt-unit">(MM)</span></th>
+                                    <th>T<br><span class="wt-unit">(MM)</span></th>
+                                    <th>D/6<br><span class="wt-unit">(MM)</span></th>
+                                    <th>IF<br>T&lt;D/6</th>
+                                    <th>T<sub>M</sub><br><span class="wt-unit">(MM)</span></th>
+                                    <th>MILL<br>TOL.</th>
+                                    <th>CALC. THK<br>T (MM)</th>
+                                    <th>SCH</th>
+                                    <th>SEL. THK<br><span class="wt-unit">(MM)</span></th>
+                                    <th>SEL. THK<br>STATUS</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- rows go here once calc is wired -->
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
 
                 <!-- ============================================================
@@ -304,6 +331,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=12"></script>
+    <script src="/static/js/app.js?v=14"></script>
 </body>
 </html>

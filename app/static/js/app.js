@@ -15,6 +15,7 @@ const API = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     }),
+    npsDimensions: () => fetch('/api/nps-dimensions'),
 };
 
 // ---------------------------------------------------------------------------
@@ -404,6 +405,157 @@ function populatePtTable(state, designTc) {
 // (Material Spec, Allowable Stress S, Pipe Standard) pending data source.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Wall Thickness Calculation Table — body population.
+//
+// Same NPS list for every class (loaded once via /api/nps-dimensions and
+// cached on window._npsDimensions). For now only the NPS and D columns
+// carry data; the rest show '—' until the per-NPS calc is wired.
+// ---------------------------------------------------------------------------
+async function ensureNpsDimensions() {
+    if (window._npsDimensions) return window._npsDimensions;
+    try {
+        const res = await API.npsDimensions();
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        window._npsDimensions = data;
+        return data;
+    } catch (e) {
+        console.error('[nps-dimensions] failed:', e);
+        showToast('Could not load NPS dimensions.', 'error', 5000);
+        return null;
+    }
+}
+
+// '3 mm' → 3, 'NIL' → 0, '1.5 mm' → 1.5
+function parseCorrosionMm(ca) {
+    if (!ca) return 0;
+    if (/^\s*NIL\s*$/i.test(ca)) return 0;
+    const m = String(ca).match(/(\d+(?:\.\d+)?)/);
+    return m ? parseFloat(m[1]) : 0;
+}
+
+// B31.3 §304.1.2 Eq. 3a — pressure-thickness ratio per case.
+// Returns null when any factor is missing (lets the row fall back to '—').
+//
+// All inputs are in psi / dimensionless: t/D = P / [2·(S·E·W + P·Y)]
+function tDratio(P_psi, S_psi, E, Y, W) {
+    if (P_psi == null || S_psi == null || E == null || Y == null || W == null) return null;
+    const denom = 2 * (S_psi * E * W + P_psi * Y);
+    return denom > 0 ? P_psi / denom : null;
+}
+
+// Per-NPS computation. Returns one row per NPS with t / D/6 / validity /
+// tm / mill_tol / calc_thk filled in (or null when inputs are missing).
+function computeWallThicknessRows(state, designPbarg, designTc) {
+    const dims = window._npsDimensions;
+    if (!dims || !dims.rows) return [];
+
+    const cf          = (state && state.codeFactors) || {};
+    const stressTable = cf.stress_table;
+    const yCurve      = cf.y_curve;
+
+    // Pressure values (psi). Case 1 = cold rated point; Case 2 = user's design point.
+    const coldPbarg = state.pt && state.pt.cold_point ? state.pt.cold_point.pressure_barg : null;
+    const coldTc    = state.pt && state.pt.temperatures_c && state.pt.temperatures_c.length
+                      ? state.pt.temperatures_c[0] : null;
+
+    const P1_psi = coldPbarg != null ? bargToPsig(coldPbarg) : null;
+    const P2_psi = designPbarg != null ? bargToPsig(designPbarg) : null;
+
+    // Stress values (psi) — interpolated from B31.3 Table A-1 via lookupStress.
+    const sCold = (stressTable && coldTc != null) ? lookupStress(stressTable, coldTc) : null;
+    const sHot  = (stressTable && designTc != null) ? lookupStress(stressTable, designTc) : null;
+    const S1_psi = sCold ? sCold.stress_psi : null;
+    const S2_psi = sHot  ? sHot.stress_psi  : null;
+
+    // Code factors. E from joint type, Y from B31.3 Table 304.1.1, W=1 below 510°C.
+    const joint = document.getElementById('rJointType')?.value || 'Seamless';
+    const E     = jointEfficiencyFromLabel(joint);
+    const yLook = lookupY(yCurve, designTc);
+    const Y     = yLook ? yLook.y : null;
+    const W     = (designTc != null && designTc <= 510) ? 1.0 : null;
+
+    // Corrosion allowance + fixed mill tolerance.
+    const C_mm    = parseCorrosionMm(state.ca);
+    const millTol = 0.125;
+
+    // Compute the two t/D ratios and take the worst case.
+    const tD1 = tDratio(P1_psi, S1_psi, E, Y, W);
+    const tD2 = tDratio(P2_psi, S2_psi, E, Y, W);
+    const candidates = [tD1, tD2].filter(v => v != null && Number.isFinite(v));
+    const tDmax = candidates.length ? Math.max(...candidates) : null;
+
+    return dims.rows.map(r => {
+        const D       = r.od_mm;
+        const t_mm    = (tDmax != null) ? tDmax * D : null;
+        const dOver6  = D / 6;
+        const valid   = (t_mm != null) ? (t_mm < dOver6 ? 'OK' : 'ALERT') : null;
+        const tm      = (t_mm != null) ? t_mm + C_mm : null;
+        const calcThk = (tm != null) ? tm / (1 - millTol) : null;
+
+        return {
+            nps:      r.nps,
+            od_mm:    D,
+            t_mm,
+            d_over_6: dOver6,
+            validity: valid,
+            tm_mm:    tm,
+            mill_tol: millTol,
+            calc_thk_mm: calcThk,
+        };
+    });
+}
+
+function populateWallThicknessTable(state, designPbarg, designTc) {
+    const tbody = document.querySelector('#rWallThicknessTable tbody');
+    if (!tbody) return;
+    const dims = window._npsDimensions;
+    if (!dims || !dims.rows) {
+        tbody.innerHTML = '<tr><td colspan="11" style="padding:20px;color:var(--text-muted);">No NPS data loaded.</td></tr>';
+        return;
+    }
+
+    const computed = (state && designPbarg != null && designTc != null && !Number.isNaN(designPbarg) && !Number.isNaN(designTc))
+        ? computeWallThicknessRows(state, designPbarg, designTc)
+        : null;
+
+    const fmtMm = v => (v == null || Number.isNaN(v)) ? '—' : v.toFixed(3);
+    const blank = '—';
+
+    if (computed) {
+        tbody.innerHTML = computed.map(r => {
+            const validClass = r.validity === 'ALERT' ? 'wt-alert' : (r.validity === 'OK' ? 'wt-ok' : '');
+            return `
+                <tr>
+                    <td>${escapeHtml(r.nps)}</td>
+                    <td>${escapeHtml(String(r.od_mm))}</td>
+                    <td>${fmtMm(r.t_mm)}</td>
+                    <td>${fmtMm(r.d_over_6)}</td>
+                    <td class="${validClass}">${r.validity || blank}</td>
+                    <td>${fmtMm(r.tm_mm)}</td>
+                    <td>${(r.mill_tol * 100).toFixed(1)}%</td>
+                    <td>${fmtMm(r.calc_thk_mm)}</td>
+                    <td>${blank}</td>
+                    <td>${blank}</td>
+                    <td>${blank}</td>
+                </tr>
+            `;
+        }).join('');
+        return;
+    }
+
+    // Fallback before design conditions are set — NPS + D only.
+    const dashes = `<td>${blank}</td>`.repeat(9);
+    tbody.innerHTML = dims.rows.map(r => `
+        <tr>
+            <td>${escapeHtml(r.nps)}</td>
+            <td>${escapeHtml(String(r.od_mm))}</td>
+            ${dashes}
+        </tr>
+    `).join('');
+}
+
 function populateScheduleHeader(state, designPbarg, designTc, mdmtC) {
     // --- Service strip -----------------------------------------------------
     const services = (state.service || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -654,6 +806,7 @@ function wireReportInputs(state) {
         // Tab 3 reads the same design conditions — keep it in sync even
         // when the user is on Tab 2, so switching to Tab 3 never shows stale.
         populateScheduleHeader(state, dp, dt, md);
+        populateWallThicknessTable(state, dp, dt);
     };
 
     pBarg.addEventListener('input', () => {
@@ -705,6 +858,11 @@ function showReport(state) {
     populateStandardBar(state);
     wireReportInputs(state);
     wireReportTabs();
+    // Wall Thickness table — fetch the NPS list (cached after first call)
+    // and render rows. Pass current design conditions so the first paint
+    // already has computed values; the wireReportInputs refresh loop then
+    // keeps it in sync as the user edits inputs.
+    ensureNpsDimensions().then(() => populateWallThicknessTable(state, state.designP, state.designT));
     // Always land on the first tab when (re)opening the report.
     document.querySelectorAll('.report-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
     document.querySelectorAll('.report-tab-content').forEach((c, i) => c.classList.toggle('active', i === 0));

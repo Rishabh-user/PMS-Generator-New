@@ -531,6 +531,55 @@ label.multi-select-option > span { flex: 1; }
 }
 
 /* ================================================================
+   WALL THICKNESS CALCULATION TABLE (Tab 3)
+   Dark navy header bar with white labels and a subtle (MM) line.
+   ================================================================ */
+.wt-table-wrap {
+    overflow-x: auto;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    background: #ffffff;
+    border: 1px solid var(--border);
+}
+.wt-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+.wt-table thead tr {
+    background: #0e3a5c;
+}
+.wt-table th {
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    text-align: center;
+    padding: 14px 10px;
+    line-height: 1.25;
+    white-space: nowrap;
+    border-right: 1px solid rgba(255, 255, 255, 0.12);
+}
+.wt-table th:last-child { border-right: none; }
+.wt-table .wt-unit {
+    font-size: 0.65rem;
+    font-weight: 500;
+    opacity: 0.85;
+    letter-spacing: 0.3px;
+}
+.wt-table td {
+    padding: 10px 10px;
+    text-align: center;
+    border-bottom: 1px solid #f1f5f9;
+    white-space: nowrap;
+}
+.wt-table tbody tr:nth-child(even) td { background: #f8fafc; }
+.wt-table tbody tr:hover td        { background: #eff6ff; }
+.wt-table .wt-ok    { color: #059669; font-weight: 700; }
+.wt-table .wt-alert { color: #dc2626; font-weight: 700; }
+
+/* ================================================================
    NOTES
    ================================================================ */
 .notes-list { font-size: 0.82rem; color: var(--text-secondary); }

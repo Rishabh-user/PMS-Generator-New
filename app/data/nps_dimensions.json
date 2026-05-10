@@ -1,0 +1,29 @@
+{
+  "source": "Project-supplied NPS list. OD values match ASME B36.10M; sizes are the subset the project uses (skips 1/8, 1/4, 3/8, 2.5, 3.5, 5, 7 etc. that B36.10M lists but the project doesn't spec).",
+  "title": "Pipe NPS → Outside Diameter (mm) lookup",
+  "note": "Populates the NPS and D (MM) columns of the Wall Thickness Calculation Table. Same list applies to every class.",
+  "rows": [
+    {"nps": "0.5",  "nps_decimal":  0.5,  "od_mm":  21.3},
+    {"nps": "0.75", "nps_decimal":  0.75, "od_mm":  26.7},
+    {"nps": "1",    "nps_decimal":  1.0,  "od_mm":  33.4},
+    {"nps": "1.5",  "nps_decimal":  1.5,  "od_mm":  48.3},
+    {"nps": "2",    "nps_decimal":  2.0,  "od_mm":  60.3},
+    {"nps": "3",    "nps_decimal":  3.0,  "od_mm":  88.9},
+    {"nps": "4",    "nps_decimal":  4.0,  "od_mm": 114.3},
+    {"nps": "6",    "nps_decimal":  6.0,  "od_mm": 168.3},
+    {"nps": "8",    "nps_decimal":  8.0,  "od_mm": 219.1},
+    {"nps": "10",   "nps_decimal": 10.0,  "od_mm": 273.1},
+    {"nps": "12",   "nps_decimal": 12.0,  "od_mm": 323.9},
+    {"nps": "14",   "nps_decimal": 14.0,  "od_mm": 355.6},
+    {"nps": "16",   "nps_decimal": 16.0,  "od_mm": 406.4},
+    {"nps": "18",   "nps_decimal": 18.0,  "od_mm": 457.0},
+    {"nps": "20",   "nps_decimal": 20.0,  "od_mm": 508.0},
+    {"nps": "22",   "nps_decimal": 22.0,  "od_mm": 559.0},
+    {"nps": "24",   "nps_decimal": 24.0,  "od_mm": 610.0},
+    {"nps": "26",   "nps_decimal": 26.0,  "od_mm": 660.0},
+    {"nps": "28",   "nps_decimal": 28.0,  "od_mm": 711.0},
+    {"nps": "30",   "nps_decimal": 30.0,  "od_mm": 762.0},
+    {"nps": "32",   "nps_decimal": 32.0,  "od_mm": 812.8},
+    {"nps": "36",   "nps_decimal": 36.0,  "od_mm": 914.4}
+  ]
+}

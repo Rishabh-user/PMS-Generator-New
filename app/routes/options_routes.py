@@ -52,3 +52,10 @@ def all_options() -> dict:
         "services": _load("services.json")["services"],
         "services_allow_custom": _load("services.json").get("allow_custom", True),
     }
+
+
+@router.get("/nps-dimensions")
+def nps_dimensions() -> dict:
+    """NPS → OD (mm) lookup used by the Wall Thickness Calculation Table.
+    Same list for every PMS class — fetched once on report load."""
+    return _load("nps_dimensions.json")

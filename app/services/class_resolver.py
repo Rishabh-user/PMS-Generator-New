@@ -169,7 +169,7 @@ def resolve(rating: str, material: str, ca: str, service: Optional[str] = None) 
     `class_naming.json` to fix)."""
     parts = derive_class_code(rating, material, ca)
     pt    = pt_lookup.find(rating, material)
-    code_factors = _build_code_factors(material, pt)
+    code_factors = _build_code_factors(material, pt, rating)
 
     return {
         **parts,
@@ -180,13 +180,16 @@ def resolve(rating: str, material: str, ca: str, service: Optional[str] = None) 
     }
 
 
-def _build_code_factors(material: str, pt: Optional[dict]) -> dict:
+def _build_code_factors(material: str, pt: Optional[dict], rating: Optional[str] = None) -> dict:
     """Bundle the stress-table row and Y-curve row that apply to this
     material so the frontend can do live S(T) and Y(T) lookups.
 
+    `rating` is passed so project pipe-grade promotions apply — e.g. a
+    1500# CS NACE class routes to API 5L X60, not A106 Gr B.
+
     Computes the cold-end S (S₁) immediately so the report card has
     something to render before the user edits the design temperature."""
-    table_key = stress_lookup.detect_table(material)
+    table_key = stress_lookup.detect_table(material, rating)
     stress_table = stress_lookup._data().get("tables", {}).get(table_key) if table_key else None  # noqa: SLF001
     y_category   = y_lookup.detect_category(material)
     y_block      = y_lookup._data().get("materials", {}).get(y_category)  # noqa: SLF001
@@ -197,7 +200,7 @@ def _build_code_factors(material: str, pt: Optional[dict]) -> dict:
     cold_t_c = None
     if pt and pt.get("temperatures_c"):
         cold_t_c = min(pt["temperatures_c"])
-    s_cold = stress_lookup.lookup(material, cold_t_c) if cold_t_c is not None else None
+    s_cold = stress_lookup.lookup(material, cold_t_c, rating) if cold_t_c is not None else None
 
     return {
         "stress_table": stress_table and {
