@@ -306,7 +306,29 @@ function renderPtTable(pt) {
     `;
 }
 
-function renderResolution(panel, data) {
+function renderInputPills(inputs) {
+    if (!inputs) return '';
+    const { rating, material, ca, service } = inputs;
+    const pills = [];
+
+    if (rating)   pills.push(`<span class="pms-banner-tag rating">${escapeHtml(rating)}</span>`);
+    if (material) pills.push(`<span class="pms-banner-tag material">${escapeHtml(material)}</span>`);
+    if (ca) {
+        // "3 mm" → "3 mm CA"; "NIL" stays "NIL" since "NIL CA" is awkward.
+        const caLabel = /mm/i.test(ca) ? `${ca} CA` : ca;
+        pills.push(`<span class="pms-banner-tag ca">${escapeHtml(caLabel)}</span>`);
+    }
+    if (service) {
+        // Multi-select picker stores values comma-separated. Render each as
+        // its own purple pill so a many-services selection stays readable.
+        for (const s of service.split(',').map(x => x.trim()).filter(Boolean)) {
+            pills.push(`<span class="pms-banner-tag service">${escapeHtml(s)}</span>`);
+        }
+    }
+    return pills.length ? `<div class="resolution-pills">${pills.join('')}</div>` : '';
+}
+
+function renderResolution(panel, data, inputs) {
     panel.style.display = 'block';
     panel.classList.remove('derived', 'error');
     panel.classList.add('derived');
@@ -315,6 +337,7 @@ function renderResolution(panel, data) {
         <div class="resolution-header">
             <span class="resolution-code">${escapeHtml(data.class_code)}</span>
         </div>
+        ${renderInputPills(inputs)}
         ${renderPtTable(data.pressure_temperature)}
         ${renderDesignConditions(data.pressure_temperature)}
     `;
@@ -370,7 +393,12 @@ function initClassResolver() {
                 if (btn) btn.disabled = true;
                 return;
             }
-            renderResolution(panel, data);
+            renderResolution(panel, data, {
+                rating:   r,
+                material: m,
+                ca:       c,
+                service:  service ? service.value : '',
+            });
             if (btn) btn.disabled = false;
         } catch (e) {
             if (my !== seq) return;

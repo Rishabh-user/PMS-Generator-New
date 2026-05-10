@@ -679,6 +679,20 @@ label.multi-select-option > span { flex: 1; }
 }
 .resolution-meta b { color: var(--text-secondary); font-weight: 600; }
 
+/* Pill row under the class code — echoes the user's Step 1 picks
+   (rating · material · CA · service) so the source of the resolved class
+   is visible at a glance. Reuses the existing .pms-banner-tag colour set. */
+.resolution-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+.resolution-pills .pms-banner-tag {
+    padding: 4px 14px;
+    font-size: 0.75rem;
+}
+
 /* ----- P-T mini-table (rendered inside the resolution card) ----- */
 .pt-card {
     margin-top: 14px;

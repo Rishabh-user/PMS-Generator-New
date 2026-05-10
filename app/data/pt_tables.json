@@ -21,21 +21,18 @@
           "temp_labels":   ["-46 to 38", "50", "100", "150", "200", "250"]
         },
         "Copper": {
-          "_source":       "Project Excel A40 (150# Copper, Potable Water)",
           "materials":     ["Copper"],
           "temperatures_c":[38.0, 50.0, 100.0],
           "pressures_barg":[15.5, 15.5, 14.5],
           "temp_labels":   ["0 to 38", "50", "100"]
         },
         "GRE": {
-          "_source":       "Project Excel A50/A52 (150# GRE, Sea Water / Special Services). A51 (Hypochlorite) is a derated variant — see _alternates.",
           "materials":     ["GRE"],
           "temperatures_c":[38.0, 50.0, 100.0],
           "pressures_barg":[20.0, 20.0, 20.0],
           "temp_labels":   ["0 to 38", "50", "100"],
           "_alternates": {
             "Hypochlorite": {
-              "_source":       "Project Excel A51 (150# GRE, Hypochlorite)",
               "temperatures_c":[38.0, 50.0, 100.0],
               "pressures_barg":[16.32, 16.32, 16.32],
               "temp_labels":   ["0 to 38", "50", "100"]
@@ -43,14 +40,12 @@
           }
         },
         "CPVC": {
-          "_source":       "Project Excel A60 (150# CPVC, Sewage / Hypochlorite). NOTE: max rated temp is 65°C; the 150°C+ columns reuse the standard B16.5 grid but represent CPVC's actual derating curve.",
           "materials":     ["CPVC"],
           "temperatures_c":[38.0, 50.0, 100.0, 150.0, 200.0, 250.0, 300.0],
           "pressures_barg":[14.46, 13.36, 12.1, 11.0, 9.75, 8.65, 7.39],
           "temp_labels":   ["32 to 38", "50", "100", "150", "200", "250", "300"]
         },
         "Titanium": {
-          "_source":       "Project Excel A70 (150# TITANIUM, Chemical / Coagulant)",
           "materials":     ["TITANIUM"],
           "temperatures_c":[38.0, 50.0, 100.0, 150.0, 200.0, 250.0],
           "pressures_barg":[19.6, 19.2, 17.7, 15.8, 13.8, 12.1],
@@ -215,7 +210,6 @@
     "EEMUA 20 bar": {
       "groups": {
         "CuNi": {
-          "_source":       "Project Excel A30 (EEMUA 20 bar 90/10 CuNi, Raw Sea Water / Fire Water)",
           "materials":     ["CuNi", "90/10 CuNi"],
           "temperatures_c":[38.0, 50.0, 100.0, 150.0],
           "pressures_barg":[20.0, 19.7, 18.6, 17.3],
@@ -224,10 +218,8 @@
       }
     },
     "Tubing": {
-      "_note": "Tubing classes (T80A/B/C, T90A/B/C) share the same (rating, material, CA) but have THREE pressure tiers per material. The current resolver picks the first-matching tier — wire a tier picker (A/B/C) into the form before treating these as authoritative. Pressures: 0°C cold / 60°C hot.",
       "groups": {
         "Tubing-SS316": {
-          "_source":       "Project Excel T80A (default tier). Tier B = 206/200, Tier C = 325/325 — see _tiers.",
           "materials":     ["SS 316 / 316L Tubing", "SS 316 / 316L"],
           "temperatures_c":[0.0, 60.0],
           "pressures_barg":[125.0, 116.0],
@@ -239,7 +231,6 @@
           }
         },
         "Tubing-6MO": {
-          "_source":       "Project Excel T90A (default tier). Tier B = 206/200, Tier C = 325/325 — see _tiers.",
           "materials":     ["6 MO Tubing"],
           "temperatures_c":[0.0, 60.0],
           "pressures_barg":[125.0, 116.0],
