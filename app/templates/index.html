@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PMS Generator</title>
     <link rel="icon" type="image/png" href="/static/images/logo.png">
-    <link rel="stylesheet" href="/static/css/styles.css?v=7">
+    <link rel="stylesheet" href="/static/css/styles.css?v=10">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -91,6 +91,203 @@
                 </div>
             </div>
 
+            <!-- ============================================================
+                 GENERATED PMS REPORT
+                 Hidden until Generate PMS clicked. Three tabulated values
+                 (Material Grade, Flange Ref, S₁/S₂) are intentionally blank
+                 placeholders — wired in once a data source is decided.
+                 ============================================================ -->
+            <div class="report-panel" id="reportPanel" style="display:none">
+
+                <div class="report-toolbar">
+                    <button type="button" class="btn btn-outline btn-sm" id="backToFormBtn">&larr; Back to inputs</button>
+                </div>
+
+                <!-- Generated-PMS banner — class code, input pills, internal
+                     id, and a Regenerate-with-AI affordance. Populated by JS
+                     in showReport(). -->
+                <div class="pms-code-banner" id="rPmsBanner"></div>
+
+                <!-- Tab navigation. Numbers continue from Step 1, so the first
+                     report tab is "2". Sticky on scroll so users can switch
+                     tabs without scrolling back to the top. -->
+                <nav class="report-tabs" id="reportTabs">
+                    <button type="button" class="report-tab active" data-rtab="pt">
+                        <span class="report-tab-num">2</span> P-T Rating
+                    </button>
+                    <button type="button" class="report-tab" data-rtab="schedule">
+                        <span class="report-tab-num">3</span> Schedule &amp; Wall Thickness
+                    </button>
+                    <button type="button" class="report-tab" data-rtab="materials">
+                        <span class="report-tab-num">4</span> Pipe &amp; Fittings Material
+                    </button>
+                    <button type="button" class="report-tab" data-rtab="components">
+                        <span class="report-tab-num">5</span> Components &amp; Notes
+                    </button>
+                </nav>
+
+                <!-- ============================================================
+                     TAB 2 · Pressure-Temperature Rating
+                     ============================================================ -->
+                <div class="report-tab-content active" data-rtab="pt">
+                    <div class="report-header">
+                        <h2 class="report-title">Pressure-Temperature Rating</h2>
+                        <p class="report-sub">Flange P-T rating per ASME B16.5 / API 6A based on selected pressure class and material.</p>
+                    </div>
+
+                    <div class="standard-bar" id="rStandardBar"></div>
+
+                    <h3 class="section-title">Pressure-Temperature Rating Table</h3>
+                    <p class="section-subtitle">Units: Pressure in <strong>barg</strong>, Temperature in <strong>&deg;C</strong>. <span class="highlight-badge">Highlighted column</span> = rating at design temperature.</p>
+                    <div class="pt-table-wrap">
+                        <table class="pt-table" id="rPtTable"></table>
+                    </div>
+
+                    <div class="adequacy-box" id="rAdequacyBox"></div>
+
+                    <div class="card">
+                        <div class="card-title"><span class="icon">&#9881;</span> Actual Process Design Conditions</div>
+                        <p class="card-subtitle">Enter the actual process design conditions for this piping class.</p>
+                        <div class="form-grid-2">
+                            <div class="form-group">
+                                <label for="rDesignPressure">Design Pressure (barg) *</label>
+                                <input type="number" id="rDesignPressure" step="0.1">
+                                <span class="hint">Two-way synced with psig field</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="rDesignPressurePsig">Design Pressure (psig)</label>
+                                <input type="number" id="rDesignPressurePsig" step="1">
+                                <span class="hint">Used for Case 2 (@ design T)</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="rCase1Pressure">Case 1 Pressure Override (psig)</label>
+                                <input type="number" id="rCase1Pressure" step="1" placeholder="Auto from P-T table">
+                                <span class="hint">Optional</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="rCase1Stress">Case 1 Stress S&#8321; Override (psi)</label>
+                                <input type="number" id="rCase1Stress" step="100" placeholder="Auto from material">
+                                <span class="hint">Optional — required once stress source is wired</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="rCase2Stress">Case 2 Stress S&#8322; Override (psi)</label>
+                                <input type="number" id="rCase2Stress" step="100" placeholder="Auto from material">
+                                <span class="hint">Optional — required once stress source is wired</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="rDesignTemperature">Design Temperature (&deg;C) *</label>
+                                <input type="number" id="rDesignTemperature" step="1">
+                                <span class="hint" id="rTempFahrenheit"></span>
+                            </div>
+                            <div class="form-group">
+                                <label for="rMdmt">Min Design Metal Temp &mdash; MDMT (&deg;C)</label>
+                                <input type="number" id="rMdmt" step="1" value="-29">
+                                <span class="hint" id="rMdmtFahrenheit"></span>
+                            </div>
+                            <div class="form-group">
+                                <label for="rJointType">Joint Type</label>
+                                <select id="rJointType">
+                                    <option value="Seamless">Seamless (E = 1.0)</option>
+                                    <option value="EFW, 100% RT">EFW, 100% RT (E = 1.0)</option>
+                                    <option value="ERW">ERW (E = 0.85)</option>
+                                    <option value="EFW">EFW (E = 0.85)</option>
+                                </select>
+                                <span class="hint" id="rJointRef">ASME B31.3 Table A-1B</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="two-col">
+                        <div class="card">
+                            <div class="card-title-underline">PMS Inputs (from Step 1)</div>
+                            <div class="kv-list" id="rPmsInputsList"></div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title-underline">Service &amp; Material</div>
+                            <div class="kv-list" id="rServiceMaterialList"></div>
+                        </div>
+                    </div>
+
+                    <div class="derived-banner">
+                        <strong>Derived Design Conditions</strong> (auto-calculated from your inputs above)
+                    </div>
+
+                    <div class="two-col">
+                        <div class="card">
+                            <div class="card-title-underline">Pressure</div>
+                            <div class="kv-list" id="rPressureCalcList"></div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title-underline">Temperature</div>
+                            <div class="kv-list" id="rTempCalcList"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================
+                     TAB 3 · Schedule & Wall Thickness — placeholder skeleton
+                     ============================================================ -->
+                <div class="report-tab-content" data-rtab="schedule">
+                    <div class="report-header">
+                        <h2 class="report-title">Schedule &amp; Wall Thickness <span class="report-title-meta">(ASME B31.3)</span></h2>
+                        <p class="report-sub">Minimum wall thickness per ASME B31.3 Eq. 3a &amp; schedule selection per ASME B36.10M / B36.19M for all NPS sizes.</p>
+                    </div>
+                    <div class="placeholder-card">
+                        <div class="placeholder-card-title">Pending data sources</div>
+                        <ul class="placeholder-list">
+                            <li><strong>NPS &rarr; OD / WT lookup</strong> &mdash; ASME B36.10M (CS/SS) and B36.19M (SS schedules)</li>
+                            <li><strong>Allowable stress S</strong> &mdash; ASME B31.3 Table A-1, by material grade and temperature</li>
+                            <li><strong>Y coefficient</strong> &mdash; ASME B31.3 Table 304.1.1, by material family and temperature</li>
+                            <li><strong>W-factor</strong> &mdash; ASME B31.3 Table 302.3.5 (weld strength reduction at temperature)</li>
+                            <li><strong>Material grade</strong> &mdash; e.g. CS pipe &rarr; A106 Gr B (also used by Tab 4)</li>
+                        </ul>
+                        <p class="placeholder-foot">Once these are wired, this tab renders <em>t<sub>req</sub> = (P&times;OD) / [2&times;(SE&middot;W + P&middot;Y)] + c</em> per NPS, with MAWP / margin / governs status per row, and engineering flags (NACE, LTCS, Y-temp limits).</p>
+                    </div>
+                </div>
+
+                <!-- ============================================================
+                     TAB 4 · Pipe & Fittings Material — placeholder skeleton
+                     ============================================================ -->
+                <div class="report-tab-content" data-rtab="materials">
+                    <div class="report-header">
+                        <h2 class="report-title">Pipe &amp; Fittings Material Assignment</h2>
+                        <p class="report-sub">Material codes assigned for pipes, elbows, tees, reducers, and branch fittings per specification.</p>
+                    </div>
+                    <div class="placeholder-card">
+                        <div class="placeholder-card-title">Pending data sources</div>
+                        <ul class="placeholder-list">
+                            <li><strong>Pipe material grade</strong> &mdash; CS &rarr; A106 Gr B, LTCS &rarr; A333 Gr 6, SS316L &rarr; A312 TP316L, etc.</li>
+                            <li><strong>Fitting material</strong> &mdash; CS &rarr; A234 WPB, LTCS &rarr; A420 WPL6, SS316L &rarr; A403 WP316L, etc.</li>
+                            <li><strong>Connection rules</strong> &mdash; small bore vs large bore (e.g. NPS &le; 2" &rarr; SCH 160 / SW; NPS &ge; 2.5" &rarr; BW &times; pipe schedule)</li>
+                            <li><strong>Branch chart</strong> &mdash; weldolet / sockolet / equal tee / reducing tee &mdash; per project Appendix-1</li>
+                        </ul>
+                        <p class="placeholder-foot">Renders Small Bore + Large Bore tables (Component &middot; Material &middot; Schedule/Class &middot; Standard) once material maps are wired.</p>
+                    </div>
+                </div>
+
+                <!-- ============================================================
+                     TAB 5 · Components & Notes — placeholder skeleton
+                     ============================================================ -->
+                <div class="report-tab-content" data-rtab="components">
+                    <div class="report-header">
+                        <h2 class="report-title">Flanges, Bolting, Valves &amp; Components</h2>
+                        <p class="report-sub">Material specifications for flanges, gaskets, bolts, valves, and special components.</p>
+                    </div>
+                    <div class="placeholder-card">
+                        <div class="placeholder-card-title">Pending data sources</div>
+                        <ul class="placeholder-list">
+                            <li><strong>Flange material</strong> &mdash; A105N (CS forged), A350 LF2 (LTCS), A182 F316L (SS), per material family</li>
+                            <li><strong>Bolting</strong> &mdash; A193 B7 / B7M (NACE) studs, A194 2H / 2HM nuts, optional Xylan coating</li>
+                            <li><strong>Gasket</strong> &mdash; ASME B16.20 spiral wound (SS316 + flexible graphite) for general; PTFE / RTJ overrides per service</li>
+                            <li><strong>Valve types</strong> &mdash; ball / gate / globe / check / butterfly &mdash; with seat &amp; trim materials per service and rating</li>
+                            <li><strong>Spectacle blind / spacer</strong> &mdash; B16.48 sizing, MOC matched to pipe family</li>
+                        </ul>
+                        <p class="placeholder-foot">Renders four cards (Flange &middot; Bolts/Nuts/Gaskets &middot; Valves &middot; Spectacle Blind/Spacer) once standard component specs are wired.</p>
+                    </div>
+                </div>
+
+            </div>
+
         </section>
     </main>
 
@@ -105,6 +302,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=7"></script>
+    <script src="/static/js/app.js?v=10"></script>
 </body>
 </html>

@@ -815,6 +815,170 @@ label.multi-select-option > span { flex: 1; }
     font-style: italic;
 }
 
+/* ----- Regenerate-with-AI button (sits in the PMS code banner) ----- */
+.btn-regenerate {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 26px;
+    border: none;
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: #ffffff;
+    background: #b45309;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.05s, box-shadow 0.15s;
+    box-shadow: 0 2px 6px rgba(180, 83, 9, 0.25);
+}
+.btn-regenerate:hover {
+    background: #92400e;
+    box-shadow: 0 4px 12px rgba(180, 83, 9, 0.35);
+}
+.btn-regenerate:active { transform: translateY(1px); }
+
+/* ----- Report tab navigation (P-T / Schedule / Materials / Components) ----- */
+.report-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    background: #ffffff;
+    border: 1px solid var(--border-card);
+    border-radius: var(--radius-lg);
+    padding: 6px;
+    margin-bottom: 24px;
+    box-shadow: var(--shadow);
+    position: sticky;
+    top: 76px;
+    z-index: 10;
+}
+.report-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 14px 18px;
+    border: none;
+    background: transparent;
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    border-bottom: 3px solid transparent;
+}
+.report-tab:hover {
+    background: #f8fafc;
+    color: var(--text);
+}
+.report-tab.active {
+    color: #0e3a5c;
+    background: #eff6ff;
+    border-bottom-color: #0e3a5c;
+}
+.report-tab-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #cbd5e1;
+    color: #ffffff;
+    font-size: 0.75rem;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+.report-tab.active .report-tab-num {
+    background: #0e3a5c;
+}
+
+/* Tab content panels — only the active one is laid out. */
+.report-tab-content { display: none; }
+.report-tab-content.active { display: block; }
+
+.report-title-meta {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text-muted);
+}
+
+/* Placeholder card used by Tabs 3 / 4 / 5 until data sources are wired. */
+.placeholder-card {
+    background: #f8fafc;
+    border: 1px dashed #cbd5e1;
+    border-radius: var(--radius-lg);
+    padding: 26px 30px;
+    margin-top: 12px;
+}
+.placeholder-card-title {
+    font-weight: 700;
+    font-size: 0.78rem;
+    color: #0e3a5c;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 14px;
+}
+.placeholder-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 18px;
+}
+.placeholder-list li {
+    padding: 8px 0;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+.placeholder-list li:last-child { border-bottom: none; }
+.placeholder-list strong { color: var(--text); font-weight: 600; }
+.placeholder-foot {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    font-style: italic;
+}
+
+/* ----- Generated-report shell (Tab 1: P-T Rating) ----- */
+.report-panel { margin-top: 24px; }
+.report-toolbar {
+    display: flex;
+    justify-content: flex-start;
+    margin-bottom: 14px;
+}
+.report-header { margin-bottom: 22px; }
+.report-title {
+    font-size: 1.55rem;
+    font-weight: 700;
+    color: #0e3a5c;
+    letter-spacing: -0.3px;
+}
+.report-sub {
+    color: var(--text-muted);
+    font-size: 0.88rem;
+    margin-top: 4px;
+}
+/* Hydrotest column — single value spanning both data rows on the right */
+.pt-table .hydrotest-col {
+    background: #b45309;
+    color: #ffffff;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.pt-table .hydrotest-cell {
+    background: #fffbeb;
+    color: #92400e;
+    font-size: 1.15rem;
+    font-weight: 700;
+    text-align: center;
+    border-left: 2px solid #fde68a;
+}
+
 /* ----- Generate action bar (sits below the resolution card) ----- */
 .generate-bar {
     display: flex;
