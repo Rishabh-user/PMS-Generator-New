@@ -870,6 +870,127 @@ label.multi-select-option > span { flex: 1; }
 }
 .btn-regenerate:active { transform: translateY(1px); }
 
+/* ----- Tab 3 Engineering Requirements & Flags ----- */
+.engineering-flags-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #b45309;
+    margin: 24px 0 14px;
+}
+.engineering-flags { display: flex; flex-direction: column; gap: 10px; }
+.flag-empty {
+    padding: 14px 18px;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    color: #15803d;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+.flag-card {
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    border-left: 4px solid;
+    background: #ffffff;
+    box-shadow: var(--shadow);
+}
+.flag-card-critical  { border-color: #dc2626; background: #fef2f2; }
+.flag-card-mandatory { border-color: #d97706; background: #fffbeb; }
+.flag-card-warning   { border-color: #eab308; background: #fefce8; }
+.flag-card-note      { border-color: #0284c7; background: #f0f9ff; }
+.flag-card-header {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 6px; flex-wrap: wrap;
+}
+.flag-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 800;
+    color: #ffffff;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+}
+.flag-badge-critical  { background: #dc2626; }
+.flag-badge-mandatory { background: #d97706; }
+.flag-badge-warning   { background: #eab308; color: #1a1a1a; }
+.flag-badge-note      { background: #0284c7; }
+.flag-title { font-weight: 700; font-size: 0.9rem; color: var(--text); }
+.flag-body  { font-size: 0.82rem; color: var(--text-secondary); line-height: 1.6; }
+
+/* ----- Tab 3 formula card (B31.3 §304.1.2 worked example) ----- */
+.formula-card {
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-left: 5px solid #0e3a5c;
+    border-radius: var(--radius-lg);
+    padding: 22px 26px;
+    margin-bottom: 22px;
+    box-shadow: var(--shadow);
+}
+.formula-card-title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: #0e3a5c;
+    margin-bottom: 14px;
+}
+.formula-card-eq {
+    font-family: 'Courier New', monospace;
+    font-size: 1.05rem;
+    color: var(--text);
+    padding: 14px 18px;
+    background: #f8fafc;
+    border-radius: 6px;
+    border: 1px solid #e2e8f0;
+    margin-bottom: 16px;
+    letter-spacing: 0.5px;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+.formula-card-example {
+    border-top: 1px solid #f1f5f9;
+    padding-top: 14px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.85;
+}
+.formula-card-example > div { margin-bottom: 4px; }
+.formula-card-example strong { color: var(--text); }
+.formula-num { color: #b45309; font-weight: 600; }
+.formula-tag-governs {
+    display: inline-block;
+    margin-left: 8px;
+    color: #059669;
+    font-weight: 700;
+    font-size: 0.82rem;
+}
+.formula-final {
+    color: #dc2626;
+    font-weight: 600;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed #fee2e2;
+}
+.formula-final strong { color: #dc2626; }
+.formula-card-notes {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #f1f5f9;
+    font-family: 'Courier New', monospace;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.7;
+}
+.formula-card-empty {
+    padding: 14px 18px;
+    background: #fffbeb;
+    border-radius: var(--radius);
+    color: #92400e;
+    font-size: 0.85rem;
+}
+
 /* ----- Tab 3 service strip + multi-line kv rows + inline tags ----- */
 .service-strip {
     display: flex;

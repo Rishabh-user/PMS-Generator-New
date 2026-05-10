@@ -59,3 +59,11 @@ def nps_dimensions() -> dict:
     """NPS → OD (mm) lookup used by the Wall Thickness Calculation Table.
     Same list for every PMS class — fetched once on report load."""
     return _load("nps_dimensions.json")
+
+
+@router.get("/pipe-dimensions")
+def pipe_dimensions() -> dict:
+    """Full ASME B36.10M Table 2-1 (NPS x Schedule x OD x WT). Powers
+    the dynamic SCH / SEL. THK selection in the Wall Thickness Table —
+    per B36.10M §9, lightest WT ≥ computed Calc.Thk wins."""
+    return _load("pipe_dimensions_b3610.json")

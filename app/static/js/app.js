@@ -16,6 +16,7 @@ const API = {
         body: JSON.stringify(body),
     }),
     npsDimensions: () => fetch('/api/nps-dimensions'),
+    pipeDimensions: () => fetch('/api/pipe-dimensions'),
 };
 
 // ---------------------------------------------------------------------------
@@ -427,6 +428,69 @@ async function ensureNpsDimensions() {
     }
 }
 
+// Full B36.10M Table 2-1, indexed by nps_decimal so the schedule rule
+// can be applied in O(1) per row. Cached on window._b3610 after first fetch.
+//
+// We KEEP only rows where at least one of (schedule, identification) is
+// defined. B36.10M also lists API 5L line-pipe-only intermediate wall
+// thicknesses with both columns blank — those aren't standard ASME
+// schedules and engineers don't normally pick them for B31.3 process
+// piping. Including them caused the picker to land on un-named rows.
+async function ensurePipeDimensions() {
+    if (window._b3610) return window._b3610;
+    try {
+        const res = await API.pipeDimensions();
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const byNps = {};
+        for (const row of data.rows || []) {
+            if (row.schedule == null && row.identification == null) continue;
+            const k = row.nps_decimal;
+            if (!byNps[k]) byNps[k] = [];
+            byNps[k].push(row);
+        }
+        for (const k of Object.keys(byNps)) {
+            byNps[k].sort((a, b) => a.wt_mm - b.wt_mm);
+        }
+        window._b3610 = { source: data.source, by_nps: byNps };
+        return window._b3610;
+    } catch (e) {
+        console.error('[pipe-dimensions] failed:', e);
+        showToast('Could not load pipe dimensions (B36.10M).', 'error', 5000);
+        return null;
+    }
+}
+
+// B36.10M §9 schedule pick. Returns the lightest row whose WT ≥ calcThk
+// for the given NPS. When no row qualifies (calc exceeds the max
+// available wall in the table for that NPS), returns the heaviest row
+// available with status 'NOT OK' so the user sees the gap.
+function pickSchedule(npsDecimal, calcThkMm) {
+    const idx = window._b3610 && window._b3610.by_nps;
+    if (!idx) return null;
+    const rows = idx[npsDecimal];
+    if (!rows || !rows.length) return null;
+    if (calcThkMm == null || Number.isNaN(calcThkMm)) return null;
+
+    // Already sorted ascending by WT.
+    let pick = rows.find(r => r.wt_mm >= calcThkMm) || null;
+    let status = 'OK';
+    if (!pick) {
+        pick = rows[rows.length - 1]; // heaviest available
+        status = 'NOT OK';
+    }
+
+    // Display rule: schedule number when present, otherwise identification.
+    const display = pick.schedule != null ? pick.schedule : (pick.identification || '—');
+
+    return {
+        sch_display: String(display),
+        wt_mm:       pick.wt_mm,
+        status,
+        row:         pick,
+    };
+}
+
 // '3 mm' → 3, 'NIL' → 0, '1.5 mm' → 1.5
 function parseCorrosionMm(ca) {
     if (!ca) return 0;
@@ -526,6 +590,15 @@ function populateWallThicknessTable(state, designPbarg, designTc) {
     if (computed) {
         tbody.innerHTML = computed.map(r => {
             const validClass = r.validity === 'ALERT' ? 'wt-alert' : (r.validity === 'OK' ? 'wt-ok' : '');
+
+            // Dynamic schedule pick from B36.10M §9 (lightest WT ≥ Calc.Thk).
+            const npsKey = parseFloat(r.nps);
+            const sched  = (r.calc_thk_mm != null) ? pickSchedule(npsKey, r.calc_thk_mm) : null;
+            const schDisp     = sched ? sched.sch_display : blank;
+            const selThkDisp  = sched ? sched.wt_mm.toFixed(2) : blank;
+            const statusDisp  = sched ? sched.status : blank;
+            const statusClass = sched ? (sched.status === 'OK' ? 'wt-ok' : 'wt-alert') : '';
+
             return `
                 <tr>
                     <td>${escapeHtml(r.nps)}</td>
@@ -536,9 +609,9 @@ function populateWallThicknessTable(state, designPbarg, designTc) {
                     <td>${fmtMm(r.tm_mm)}</td>
                     <td>${(r.mill_tol * 100).toFixed(1)}%</td>
                     <td>${fmtMm(r.calc_thk_mm)}</td>
-                    <td>${blank}</td>
-                    <td>${blank}</td>
-                    <td>${blank}</td>
+                    <td>${escapeHtml(schDisp)}</td>
+                    <td>${escapeHtml(selThkDisp)}</td>
+                    <td class="${statusClass}">${escapeHtml(statusDisp)}</td>
                 </tr>
             `;
         }).join('');
@@ -554,6 +627,260 @@ function populateWallThicknessTable(state, designPbarg, designTc) {
             ${dashes}
         </tr>
     `).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Engineering Requirements & Flags
+//
+// Pure function over the current state — every flag is one of four levels:
+//   critical  (red)     — calculation can't proceed safely
+//   mandatory (amber)   — design rule the engineer must apply
+//   warning   (yellow)  — design point at the edge of validity
+//   note      (blue)    — informational, no action needed
+//
+// Re-evaluated on every refresh so flags appear/disappear as inputs change.
+// ---------------------------------------------------------------------------
+const FLAG_LEVEL_LABEL = {
+    critical:  'Critical',
+    mandatory: 'Mandatory',
+    warning:   'Warning',
+    note:      'Note',
+};
+
+function evaluateFlags(state, designPbarg, designTc, mdmtC) {
+    const flags = [];
+    const cf       = (state && state.codeFactors) || {};
+    const mat      = state && state.material ? state.material : '';
+    const cleanMat = cleanMaterial(mat);
+    const isAustenitic = cf.y_curve && cf.y_curve.category === 'austenitic_steels';
+
+    // Critical — material has no entry in B31.3 Table A-1 (composites, plastics).
+    if (!cf.stress_table) {
+        flags.push({
+            level: 'critical',
+            title: 'No ASME B31.3 Allowable Stress',
+            body:  `Material ${cleanMat} is not tabulated in B31.3 Table A-1 — likely composite or non-metal pipe (e.g. GRE per ISO 14692, CPVC per ASTM F441). Wall thickness cannot be computed from Eq. 3a; refer to material-specific design rules.`,
+        });
+    }
+
+    // Critical — cold-end stress is clamped above the table maximum.
+    if (cf.stress_at_cold && cf.stress_at_cold.clamped === 'high') {
+        flags.push({
+            level: 'critical',
+            title: 'Cold-End Stress Clamped — Above Table Maximum',
+            body:  `Cold temperature exceeds the highest tabulated point in B31.3 Table A-1 for this spec. The Allowable Stress shown is the table ceiling — verify the cold rated point falls within the material's published range.`,
+        });
+    }
+
+    // Mandatory — NACE MR0175 sour service.
+    if (/NACE/i.test(mat)) {
+        flags.push({
+            level: 'mandatory',
+            title: 'NACE MR0175 / ISO 15156 — Sour Service',
+            body:  'Material hardness controlled per NACE MR0175 (HRC ≤ 22 base metal, HV ≤ 250 weld). Heat-treatment certification, HIC / SSC qualification required. Project policy caps service temperature at 250°C for sour-service lines.',
+        });
+    }
+
+    // Mandatory — Low-temperature carbon steel.
+    if (/^LTCS/i.test(mat)) {
+        const md = (mdmtC != null && !Number.isNaN(mdmtC)) ? `${mdmtC.toFixed(0)}°C` : 'MDMT';
+        flags.push({
+            level: 'mandatory',
+            title: 'Low-Temperature Service — A333 Gr 6',
+            body:  `Charpy V-notch impact testing per ASTM A333 Gr 6 — minimum 13.5 ft·lbf at ${md}. Welding procedure qualification at MDMT is mandatory; PWHT records to be retained.`,
+        });
+    }
+
+    // Note — high-pressure CS NACE auto-promoted to API 5L X60 PSL-2.
+    if (cf.stress_table && cf.stress_table.key === 'API5LX60') {
+        flags.push({
+            level: 'note',
+            title: 'API 5L X60 PSL-2 Promoted (High-Pressure NACE)',
+            body:  'For 1500# / 2500# CS NACE classes, project convention specs API 5L Grade X60 PSL-2 line pipe (S = 25,000 psi cold) instead of A106 Gr B (S = 20,000 psi). Wall thickness uses the X60 stress curve.',
+        });
+    }
+
+    // Warning — Y above the ferritic baseline.
+    if (designTc != null && designTc > 482 && !isAustenitic) {
+        flags.push({
+            level: 'warning',
+            title: 'Y Coefficient — Above Ferritic Baseline (482°C)',
+            body:  `Design temperature ${designTc.toFixed(0)}°C exceeds the 482°C ferritic baseline in B31.3 Table 304.1.1. Y rises in steps (0.4 → 0.5 at 510°C → 0.7 at 538°C). Verify the interpolation against your actual material spec.`,
+        });
+    }
+
+    // Warning — W factor below 1 above 510°C creep onset.
+    if (designTc != null && designTc > 510) {
+        flags.push({
+            level: 'warning',
+            title: 'W Factor — Above Creep Onset (510°C)',
+            body:  `Design temperature ${designTc.toFixed(0)}°C exceeds the 510°C creep onset. W = 1 still applies for seamless / 100% RT welded pipe; for lower joint efficiencies W < 1 per Table 302.3.5 — review weld strength reduction.`,
+        });
+    }
+
+    // Warning — galvanizing temperature limit.
+    if (/GALV/i.test(mat) && designTc != null && designTc > 200) {
+        flags.push({
+            level: 'warning',
+            title: 'Galvanizing — Above Coating Temperature Limit',
+            body:  `Design temperature ${designTc.toFixed(0)}°C exceeds the typical hot-dip galvanized zinc coating limit (~200°C). Coating may degrade in service — verify temperature compatibility or specify an alternative coating system.`,
+        });
+    }
+
+    // Note — operating estimate is just a rule of thumb.
+    if (cf.stress_table) {
+        flags.push({
+            level: 'note',
+            title: 'Operating Conditions — 80% Estimate',
+            body:  'The "Operating (est. 80%)" pressure / temperature on the Derived Design Conditions card is a rule-of-thumb estimate (0.8 × design). Replace with actual process operating point when available.',
+        });
+    }
+
+    return flags;
+}
+
+function renderFlags(flags) {
+    const container = document.getElementById('rEngineeringFlags');
+    if (!container) return;
+    if (!flags.length) {
+        container.innerHTML = `<div class="flag-empty">&#10003; All clear — no engineering flags raised for this configuration.</div>`;
+        return;
+    }
+    container.innerHTML = flags.map(f => `
+        <div class="flag-card flag-card-${f.level}">
+            <div class="flag-card-header">
+                <span class="flag-badge flag-badge-${f.level}">${escapeHtml(FLAG_LEVEL_LABEL[f.level] || f.level)}</span>
+                <span class="flag-title">${escapeHtml(f.title)}</span>
+            </div>
+            <div class="flag-body">${escapeHtml(f.body)}</div>
+        </div>
+    `).join('');
+}
+
+// B31.3 Eq. 3a worked-example card. Pure render, no I/O — pulls from
+// the same state + code_factors as populateScheduleHeader. Picks NPS 6"
+// as the example size (typical primary line) and computes both cases
+// in inches, since that's how B31.3 conventions read (Table A-1 stress
+// in psi, c in inches, etc.). Re-rendered on every refresh.
+function renderFormulaCard(state, designPbarg, designTc) {
+    const card = document.getElementById('rFormulaCard');
+    if (!card) return;
+
+    const dims = window._npsDimensions;
+    const npsRow = dims && dims.rows
+        ? dims.rows.find(r => r.nps_decimal === 6.0)
+        : null;
+    if (!npsRow) {
+        card.innerHTML = '<div class="formula-card-empty">Worked example unavailable — NPS 6 not in dimensions.</div>';
+        return;
+    }
+
+    const D_mm = npsRow.od_mm;
+    const D_in = D_mm / 25.4;
+
+    const cf          = (state && state.codeFactors) || {};
+    const stressTable = cf.stress_table;
+    const yCurve      = cf.y_curve;
+
+    const coldPbarg = state.pt && state.pt.cold_point ? state.pt.cold_point.pressure_barg : null;
+    const coldTc    = state.pt && state.pt.temperatures_c && state.pt.temperatures_c.length
+                      ? state.pt.temperatures_c[0] : null;
+    const coldTlbl  = state.pt && state.pt.temp_labels && state.pt.temp_labels.length
+                      ? state.pt.temp_labels[0] : '—';
+
+    const P1_psi = coldPbarg != null ? bargToPsig(coldPbarg) : null;
+    const P2_psi = designPbarg != null ? bargToPsig(designPbarg) : null;
+
+    const sCold = stressTable && coldTc != null ? lookupStress(stressTable, coldTc) : null;
+    const sHot  = stressTable && designTc != null ? lookupStress(stressTable, designTc) : null;
+    const S1 = sCold ? sCold.stress_psi : null;
+    const S2 = sHot  ? sHot.stress_psi  : null;
+
+    const joint   = document.getElementById('rJointType')?.value || 'Seamless';
+    const E       = jointEfficiencyFromLabel(joint);
+    const yLook   = lookupY(yCurve, designTc);
+    const Y       = yLook ? yLook.y : 0.4;
+    const yLabel  = yCurve ? (yCurve.label || 'unknown') : 'unknown';
+    const W       = (designTc != null && designTc <= 510) ? 1.0 : NaN;
+
+    const C_mm    = parseCorrosionMm(state.ca);
+    const C_in    = C_mm / 25.4;
+    const millTol = 0.125;
+
+    // Eq. 3a per case in inches: t = P·D / [2·(S·E·W + P·Y)]
+    let t1_in = null, t2_in = null;
+    if (P1_psi != null && S1 != null && Number.isFinite(W)) {
+        t1_in = (P1_psi * D_in) / (2 * (S1 * E * W + P1_psi * Y));
+    }
+    if (P2_psi != null && S2 != null && Number.isFinite(W)) {
+        t2_in = (P2_psi * D_in) / (2 * (S2 * E * W + P2_psi * Y));
+    }
+
+    // Determine governing case by t_press magnitude (which encodes both P and S).
+    const candidates = [t1_in, t2_in].filter(v => v != null && Number.isFinite(v));
+    if (!candidates.length) {
+        card.innerHTML = `
+            <div class="formula-card-title">ASME B31.3 §304.1.2 — Internal Pressure (Eq. 3a, enhanced with W-factor)</div>
+            <div class="formula-card-eq">t<sub>req</sub> = (P × OD) / [2 × (S × E × W + P × Y)] + c</div>
+            <div class="formula-card-empty">Worked example needs allowable stress — not available for this material.</div>
+        `;
+        return;
+    }
+    const case1Governs = (t1_in != null && (t2_in == null || t1_in >= t2_in));
+    const t_press_in = case1Governs ? t1_in : t2_in;
+    const tm_in = t_press_in + C_in;
+    const T_in  = tm_in / (1 - millTol);
+    const T_mm  = T_in * 25.4;
+
+    const fmtIn  = v => v == null ? '—' : v.toFixed(4) + '"';
+    const fmtPsi = v => v == null ? '—' : v.toLocaleString();
+    const govSpan = '<span class="formula-tag-governs">← GOVERNS</span>';
+
+    const designTfmt = designTc != null && !Number.isNaN(designTc) ? designTc.toFixed(0) : '—';
+    const coldDeg = coldTc != null ? `${coldTlbl}°C` : '—';
+
+    card.innerHTML = `
+        <div class="formula-card-title">ASME B31.3 §304.1.2 — Internal Pressure (Eq. 3a, enhanced with W-factor)</div>
+        <div class="formula-card-eq">t<sub>req</sub> = (P × OD) / [2 × (S × E × W + P × Y)] + c</div>
+        <div class="formula-card-example">
+            <div>
+                <strong>NPS ${escapeHtml(npsRow.nps)}" example:</strong>
+                OD = ${D_in.toFixed(3)}"
+                | E = ${E}
+                | W = ${Number.isFinite(W) ? W : '—'}
+                | Y = ${Y.toFixed(2)} <span class="kv-tag-inline dim">[${escapeHtml(yLabel)}]</span>
+                | c = ${C_in.toFixed(4)}" <span class="kv-tag-inline dim">(<span class="formula-num">${C_mm} mm</span>)</span>
+                | mill tol = <span class="formula-num">${(millTol*100).toFixed(1)}%</span>
+            </div>
+            <div>
+                <strong>Case 1 (Min T / Max P @ ${escapeHtml(coldDeg)}):</strong>
+                P = ${P1_psi != null ? P1_psi.toFixed(1) : '—'} psig,
+                S = ${fmtPsi(S1)} psi
+                → t<sub>press</sub> = <span class="formula-num">${fmtIn(t1_in)}</span>
+                ${case1Governs ? govSpan : ''}
+            </div>
+            <div>
+                <strong>Case 2 (Design Point @ ${designTfmt}°C):</strong>
+                P = ${P2_psi != null ? P2_psi.toFixed(1) : '—'} psig,
+                S = ${fmtPsi(S2)} psi
+                → t<sub>press</sub> = <span class="formula-num">${fmtIn(t2_in)}</span>
+                ${!case1Governs && t2_in != null ? govSpan : ''}
+            </div>
+            <div class="formula-final">
+                Using ${case1Governs ? 'Case 1 (Min T / Max P)' : 'Case 2 (Design Point)'}:
+                t = ${fmtIn(t_press_in)} → t<sub>m</sub> = t+c = ${fmtIn(tm_in)}
+                → T<sub>REQ</sub> = t<sub>m</sub>/(1−${(millTol*100).toFixed(1)}%) = <strong>${fmtIn(T_in)}</strong>
+                (${T_mm.toFixed(2)} mm)
+            </div>
+        </div>
+        <div class="formula-card-notes">
+            • t<sub>min</sub> = (t<sub>req</sub> + c) / (1 − 12.5%)
+            &nbsp;|&nbsp;
+            • MAWP = [2×S×E×W×t<sub>eff</sub>] / [OD − 2×Y×t<sub>eff</sub>]
+            &nbsp;|&nbsp;
+            • t<sub>eff</sub> = WT<sub>nom</sub> × (1 − mill%) − c − mech
+        </div>
+    `;
 }
 
 function populateScheduleHeader(state, designPbarg, designTc, mdmtC) {
@@ -807,6 +1134,8 @@ function wireReportInputs(state) {
         // when the user is on Tab 2, so switching to Tab 3 never shows stale.
         populateScheduleHeader(state, dp, dt, md);
         populateWallThicknessTable(state, dp, dt);
+        renderFormulaCard(state, dp, dt);
+        renderFlags(evaluateFlags(state, dp, dt, md));
     };
 
     pBarg.addEventListener('input', () => {
@@ -858,11 +1187,18 @@ function showReport(state) {
     populateStandardBar(state);
     wireReportInputs(state);
     wireReportTabs();
-    // Wall Thickness table — fetch the NPS list (cached after first call)
-    // and render rows. Pass current design conditions so the first paint
-    // already has computed values; the wireReportInputs refresh loop then
-    // keeps it in sync as the user edits inputs.
-    ensureNpsDimensions().then(() => populateWallThicknessTable(state, state.designP, state.designT));
+    // Wall Thickness table + formula card both depend on the NPS list
+    // and B36.10M Table 2-1 (cached after first fetch). wireReportInputs
+    // already fired a synchronous refresh above before these resolved,
+    // so re-render both once data lands. Subsequent refreshes (driven
+    // by input edits) will hit the cache and work first try.
+    Promise.all([
+        ensureNpsDimensions(),
+        ensurePipeDimensions(),
+    ]).then(() => {
+        populateWallThicknessTable(state, state.designP, state.designT);
+        renderFormulaCard(state, state.designP, state.designT);
+    });
     // Always land on the first tab when (re)opening the report.
     document.querySelectorAll('.report-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
     document.querySelectorAll('.report-tab-content').forEach((c, i) => c.classList.toggle('active', i === 0));

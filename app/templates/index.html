@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PMS Generator</title>
     <link rel="icon" type="image/png" href="/static/images/logo.png">
-    <link rel="stylesheet" href="/static/css/styles.css?v=14">
+    <link rel="stylesheet" href="/static/css/styles.css?v=16">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -233,6 +233,10 @@
                         <p class="report-sub">Minimum wall thickness per ASME B31.3 Eq. 3a &amp; schedule selection per ASME B36.10M / B36.19M for all NPS sizes.</p>
                     </div>
 
+                    <!-- B31.3 Eq. 3a formula card — populated by renderFormulaCard()
+                         with the current state (NPS 6 worked example). -->
+                    <div class="formula-card" id="rFormulaCard"></div>
+
                     <div class="service-strip" id="rServiceStrip"></div>
 
                     <div class="two-col">
@@ -246,9 +250,12 @@
                         </div>
                     </div>
 
-                    <!-- Wall Thickness Calculation Table — column headers
-                         only for now. Rows will be populated when the
-                         per-NPS calculation pipeline is wired. -->
+                    <!-- Engineering Requirements & Flags — populated by
+                         renderFlags() with cards per severity level
+                         (Critical / Mandatory / Warning / Note). -->
+                    <h3 class="engineering-flags-title">&#9888; Engineering Requirements &amp; Flags</h3>
+                    <div class="engineering-flags" id="rEngineeringFlags"></div>
+
                     <h3 class="section-title" style="margin-top:24px">Wall Thickness Calculation Table</h3>
                     <div class="wt-table-wrap">
                         <table class="wt-table" id="rWallThicknessTable">
@@ -331,6 +338,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=14"></script>
+    <script src="/static/js/app.js?v=18"></script>
 </body>
 </html>
