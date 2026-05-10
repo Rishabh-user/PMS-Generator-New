@@ -397,6 +397,220 @@ function populatePtTable(state, designTc) {
     `;
 }
 
+// ---------------------------------------------------------------------------
+// TAB 3 · Schedule & Wall Thickness — header section
+//   Service strip + Design Parameters card + Fabrication & Code Factors card.
+// Pure formulas and existing inputs only — three rows are blank placeholders
+// (Material Spec, Allowable Stress S, Pipe Standard) pending data source.
+// ---------------------------------------------------------------------------
+
+function populateScheduleHeader(state, designPbarg, designTc, mdmtC) {
+    // --- Service strip -----------------------------------------------------
+    const services = (state.service || '').split(',').map(s => s.trim()).filter(Boolean);
+    const strip = document.getElementById('rServiceStrip');
+    if (strip) {
+        strip.innerHTML = `
+            <span class="service-strip-label">Service:</span>
+            ${services.length
+                ? services.map(s => `<span class="service-pill">${escapeHtml(s)}</span>`).join('')
+                : '<span class="service-strip-empty">— none —</span>'}
+        `;
+    }
+
+    // --- Pressure values ---------------------------------------------------
+    // Cold case: max rated pressure across the indexed envelope (typically
+    // the value in the lowest-temperature column).
+    const coldPbarg = state.pt && state.pt.cold_point ? state.pt.cold_point.pressure_barg : null;
+    const coldPpsig = coldPbarg != null ? bargToPsig(coldPbarg) : null;
+    const coldTlbl  = state.pt && state.pt.temp_labels && state.pt.temp_labels.length
+        ? state.pt.temp_labels[0] : '—';
+    // Cold-end design temperature (numeric, °C) for stress lookup. The
+    // P-T table's first temp column is what the Excel uses as Case 1
+    // (e.g. "-29 to 38" → use 38°C as the upper bound for stress).
+    const coldTc = state.pt && state.pt.temperatures_c && state.pt.temperatures_c.length
+        ? state.pt.temperatures_c[0] : null;
+
+    // Design pressure as entered by the user.
+    const dPpsig = bargToPsig(designPbarg);
+
+    // GOVERNS marker on pressure: the case with the larger P drives wall
+    // thickness via Eq. 3a (without S yet — once stresses are wired the
+    // proper compare is on t/D ratio per case, MAX wins).
+    const coldGoverns = coldPbarg != null && coldPbarg > designPbarg;
+
+    // --- Material info -----------------------------------------------------
+    const cleanMat  = cleanMaterial(state.material);
+    const isLowTemp = /^LTCS/i.test(state.material);
+    const isSS      = /^(SS|316|6\s*MO)/i.test(cleanMat);
+
+    // --- Joint type (read from Tab 2 input) --------------------------------
+    const joint = document.getElementById('rJointType')?.value || 'Seamless';
+    const E     = jointEfficiencyFromLabel(joint);
+
+    // --- Pipe standard rule of thumb --------------------------------------
+    // Carbon steel / LTCS / DSS / SDSS / Ti / Cu / CuNi etc. → B36.10M.
+    // Stainless schedules (5S/10S/40S/80S) live in B36.19M for ≤ 12";
+    // larger SS sizes drop back to B36.10M dimensions.
+    const pipeStandard = isSS
+        ? 'ASME B36.19M (≤12") / B36.10M (>12")'
+        : 'ASME B36.10M';
+
+    // --- Y coefficient (B31.3 Table 304.1.1) -------------------------------
+    // Real interpolated lookup against y_coefficient.json. The table goes
+    // 0.4 (≤482°C) → 0.5 → 0.7 in steps; we interpolate between published
+    // breakpoints. The category label (Ferritic / Austenitic / etc.) comes
+    // from the same JSON.
+    const designTf = cToF(designTc);
+    const yLook    = state.codeFactors && state.codeFactors.y_curve
+                     ? lookupY(state.codeFactors.y_curve, designTc)
+                     : null;
+    const yCategoryLabel = state.codeFactors && state.codeFactors.y_curve
+                           ? state.codeFactors.y_curve.label
+                           : 'unknown category';
+    let yCoef = yLook ? yLook.y : NaN;
+    let yNote = yLook
+        ? `per ASME B31.3 Table 304.1.1 @ ${fmt(designTf, 1)}°F (${yCategoryLabel})`
+        : `pending — no Y curve indexed for this material`;
+    if (yLook && yLook.clamped === 'high') {
+        yNote = `clamped — design T ${fmt(designTc, 0)}°C above table max; consult Table 304.1.1`;
+    }
+
+    // --- W-factor (B31.3 Table 302.3.5) ------------------------------------
+    // Stays 1 below 510°C for seamless / 100% RT welded. Drops with T for
+    // certain joint types — stub out the warning until the full curve is in.
+    let wFactor = 1;
+    let wNote   = `per ASME B31.3 Table 302.3.5 @ ${fmt(designTf, 1)}°F (W=1)`;
+    if (designTc > 510) {
+        wFactor = NaN;
+        wNote   = `pending — design T ${fmt(designTc, 0)}°C above the 510°C creep onset; W < 1 per Table 302.3.5`;
+    }
+
+    // --- Helpers ----------------------------------------------------------
+    const govSpan    = '<span class="kv-tag-inline governs">[GOVERNS]</span>';
+    const activeSpan = '<span class="kv-tag-inline active">[active]</span>';
+    const dimSpan    = (txt) => `<span class="kv-tag-inline dim">[${escapeHtml(txt)}]</span>`;
+
+    const pendingValue = (msg) =>
+        `<span class="kv-value" style="color:var(--text-muted);font-style:italic">${escapeHtml(msg)}</span>`;
+
+    // --- Build Design Parameters card --------------------------------------
+    const ratingNum = state.rating.replace('#', '').trim();
+    const classCell = `<span class="kv-value bold">${escapeHtml(state.classCode)} (${escapeHtml(state.rating)})</span>`;
+
+    const pressureCell = coldPbarg != null
+        ? `
+            <div class="kv-multi">
+                <div>
+                    <strong>Min T / Max P:</strong> ${fmt(coldPpsig, 1)} psig
+                    <span class="unit">(${fmt(coldPbarg, 1)} barg)</span>
+                    <span class="unit">@ ${escapeHtml(coldTlbl)}</span>
+                    ${coldGoverns ? govSpan : activeSpan}
+                </div>
+                <div>
+                    <strong>Design Point:</strong> ${fmt(dPpsig, 1)} psig
+                    <span class="unit">(${fmt(designPbarg, 1)} barg)</span>
+                    <span class="unit">@ ${fmt(designTc, 0)}°C</span>
+                    ${coldGoverns ? activeSpan : govSpan}
+                </div>
+                <div class="kv-foot">t<sub>REQ</sub> uses MAX(Case 1, Case 2) per size</div>
+            </div>
+          `
+        : `
+            <div class="kv-multi">
+                <div>
+                    <strong>Design Point:</strong> ${fmt(dPpsig, 1)} psig
+                    <span class="unit">(${fmt(designPbarg, 1)} barg)</span>
+                    <span class="unit">@ ${fmt(designTc, 0)}°C</span>
+                    ${govSpan}
+                </div>
+                <div class="kv-foot">No P-T envelope indexed — design point governs by default</div>
+            </div>
+          `;
+
+    const tempCell = `
+        <div class="kv-multi">
+            <div>
+                <strong>Min:</strong> ${escapeHtml(coldTlbl)}
+                <span class="unit">(${state.pt && state.pt.temperatures_c ? fmt(cToF(state.pt.temperatures_c[0]), 1) : '—'}°F)</span>
+                ${dimSpan('P-T min')} ${coldGoverns ? govSpan : activeSpan}
+            </div>
+            <div>
+                <strong>Max (Design):</strong> ${fmt(designTc, 0)}°C
+                <span class="unit">(${fmt(designTf, 1)}°F)</span>
+                ${dimSpan('design')} ${coldGoverns ? activeSpan : govSpan}
+            </div>
+        </div>
+    `;
+
+    // --- Allowable Stress S(T), B31.3 Table A-1 ----------------------------
+    // S₁ is at the cold P-T endpoint (typically the 38°C/100°F column).
+    // S₂ is at the user's design temperature, interpolated.
+    // GOVERNS marker on stress mirrors the pressure GOVERNS — whichever
+    // case has the higher pressure wins. Proper t/D compare across the
+    // two cases will land when the wall-thickness view is built.
+    const stressTable = state.codeFactors && state.codeFactors.stress_table
+                        ? state.codeFactors.stress_table
+                        : null;
+    const sCold = stressTable && coldTc != null ? lookupStress(stressTable, coldTc) : null;
+    const sHot  = stressTable                   ? lookupStress(stressTable, designTc) : null;
+
+    const tableLabel = stressTable ? stressTable.label : cleanMat;
+    const stressCell = stressTable
+        ? `
+            <div class="kv-multi">
+                <div>
+                    <strong>S @ ${escapeHtml(coldTlbl)}:</strong>
+                    ${sCold ? fmt(sCold.stress_psi, 0).replace(/(\d)(?=(\d{3})+$)/g, '$1,') + ' psi' : '—'}
+                    <span class="unit">(${sCold ? fmt(sCold.stress_mpa, 1) + ' MPa' : '—'})</span>
+                    ${coldGoverns ? govSpan : activeSpan}
+                </div>
+                <div>
+                    <strong>S @ ${fmt(designTc, 0)}°C:</strong>
+                    ${sHot ? fmt(sHot.stress_psi, 0).replace(/(\d)(?=(\d{3})+$)/g, '$1,') + ' psi' : '—'}
+                    <span class="unit">(${sHot ? fmt(sHot.stress_mpa, 1) + ' MPa' : '—'})</span>
+                    ${sHot && sHot.clamped === 'high' ? '<span class="kv-tag-inline dim">[clamped — above table max]</span>' : ''}
+                    ${coldGoverns ? activeSpan : govSpan}
+                </div>
+                <div class="kv-foot">per ASME B31.3 Table A-1 [${escapeHtml(stressTable.key || cleanMat)}]</div>
+            </div>
+          `
+        : `
+            <div class="kv-multi">
+                <div>${pendingValue('S @ ' + coldTlbl + ': no B31.3 Table A-1 entry for this material')}</div>
+                <div>${pendingValue('S @ ' + fmt(designTc, 0) + '°C: no B31.3 Table A-1 entry')}</div>
+                <div class="kv-foot">B31.3 doesn't tabulate stress for ${escapeHtml(cleanMat)} (likely composite / non-metal)</div>
+            </div>
+          `;
+
+    document.getElementById('rDesignParamsList').innerHTML = [
+        `<div class="kv-row"><span class="kv-label">PMS Class</span>${classCell}</div>`,
+        `<div class="kv-row top"><span class="kv-label">Design Pressure (P)</span>${pressureCell}</div>`,
+        `<div class="kv-row top"><span class="kv-label">Design Temperature</span>${tempCell}</div>`,
+        `<div class="kv-row"><span class="kv-label">Material</span><span class="kv-value bold">${escapeHtml(cleanMat)}</span></div>`,
+        `<div class="kv-row"><span class="kv-label">Material Spec</span>${pendingValue('— pending data source —')}</div>`,
+        `<div class="kv-row top"><span class="kv-label">Allowable Stress S(T)</span>${stressCell}</div>`,
+    ].join('');
+
+    // --- Build Fabrication & Code Factors card -----------------------------
+    const yCell = Number.isFinite(yCoef)
+        ? `<span class="kv-value bold">${fmt(yCoef, 2)}</span> <span class="kv-foot inline">${escapeHtml(yNote)}</span>`
+        : pendingValue(yNote);
+
+    const wCell = Number.isFinite(wFactor)
+        ? `<span class="kv-value bold">${wFactor}</span> <span class="kv-foot inline">${escapeHtml(wNote)}</span>`
+        : pendingValue(wNote);
+
+    document.getElementById('rCodeFactorsList').innerHTML = [
+        `<div class="kv-row"><span class="kv-label">Pipe Standard</span><span class="kv-value bold">${escapeHtml(pipeStandard)}</span></div>`,
+        `<div class="kv-row"><span class="kv-label">Joint Type</span><span class="kv-value bold">${escapeHtml(joint)}</span></div>`,
+        `<div class="kv-row"><span class="kv-label">Joint Efficiency (E)</span><span class="kv-value bold">${fmt(E, 2).replace(/\.00$/, '')}</span></div>`,
+        `<div class="kv-row top"><span class="kv-label">Y Coefficient</span>${yCell}</div>`,
+        `<div class="kv-row top"><span class="kv-label">W-factor (Weld Str.)</span>${wCell}</div>`,
+        `<div class="kv-row"><span class="kv-label">Corrosion Allow. (c)</span><span class="kv-value bold">${escapeHtml(state.ca)}</span></div>`,
+        `<div class="kv-row"><span class="kv-label">Mill Undertolerance</span><span class="kv-value bold">${(REPORT_CONST.millTolerance * 100).toFixed(1)}%</span></div>`,
+    ].join('');
+}
+
 function populateAdequacy(state, designPbarg, designTc) {
     const box = document.getElementById('rAdequacyBox');
     if (!state.pt || !state.pt.temperatures_c) {
@@ -437,6 +651,9 @@ function wireReportInputs(state) {
         populateDerivedConditions(state, dp, dt, md);
         populatePtTable(state, dt);
         populateAdequacy(state, dp, dt);
+        // Tab 3 reads the same design conditions — keep it in sync even
+        // when the user is on Tab 2, so switching to Tab 3 never shows stale.
+        populateScheduleHeader(state, dp, dt, md);
     };
 
     pBarg.addEventListener('input', () => {
@@ -539,6 +756,7 @@ function wireForm() {
             rating, material, ca, service,
             classCode: cached.class_code,
             pt:        cached.pressure_temperature,
+            codeFactors: cached.code_factors || null,
             designP, designT,
         };
         showReport(state);
@@ -557,6 +775,58 @@ function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
         '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;',
     }[c]));
+}
+
+// ---------------------------------------------------------------------------
+// Allowable Stress S(T) — JS-side interpolation against the table the
+// backend hands us in resolution.code_factors.stress_table.
+//
+// Mirror of stress_lookup.lookup() in Python: linear interpolate at temp_c,
+// clamp at endpoints, round to nearest 100 psi. Both sides return identical
+// numbers so the report stays consistent across page refreshes.
+// ---------------------------------------------------------------------------
+const PSI_TO_MPA = 0.00689476;
+
+function _interpolateAtTempC(byTempC, targetT) {
+    const keys = Object.keys(byTempC || {}).map(Number).sort((a, b) => a - b);
+    if (!keys.length) return { value: null, clamped: null };
+    if (targetT <= keys[0])              return { value: byTempC[String(keys[0])], clamped: targetT < keys[0] ? 'low' : null };
+    if (targetT >= keys[keys.length-1])  return { value: byTempC[String(keys[keys.length-1])], clamped: targetT > keys[keys.length-1] ? 'high' : null };
+    for (let i = 0; i < keys.length - 1; i++) {
+        const t1 = keys[i], t2 = keys[i+1];
+        if (targetT >= t1 && targetT <= t2) {
+            const v1 = byTempC[String(t1)], v2 = byTempC[String(t2)];
+            const frac = (targetT - t1) / (t2 - t1);
+            return { value: v1 + frac * (v2 - v1), clamped: null };
+        }
+    }
+    return { value: byTempC[String(keys[keys.length-1])], clamped: 'high' };
+}
+
+function lookupStress(stressTable, tempC) {
+    if (!stressTable || !stressTable.stress_psi_by_temp_c || tempC == null) return null;
+    const { value, clamped } = _interpolateAtTempC(stressTable.stress_psi_by_temp_c, tempC);
+    if (value == null) return null;
+    const rounded = Math.round(value / 100) * 100;
+    return {
+        stress_psi: rounded,
+        stress_mpa: Math.round(rounded * PSI_TO_MPA * 10) / 10,
+        clamped,
+    };
+}
+
+function lookupY(yCurve, tempC) {
+    if (!yCurve || !yCurve.y_values || tempC == null) return null;
+    const temps = yCurve.temperatures_c || [];
+    const yvals = yCurve.y_values;
+    // Pair only published entries (gray iron's trailing nulls are dropped).
+    const byTempC = {};
+    for (let i = 0; i < temps.length; i++) {
+        if (yvals[i] != null) byTempC[String(temps[i])] = yvals[i];
+    }
+    const { value, clamped } = _interpolateAtTempC(byTempC, tempC);
+    if (value == null) return null;
+    return { y: Math.round(value * 100) / 100, clamped };
 }
 
 // Linear interpolation across the P-T curve. Clamps when T is outside the

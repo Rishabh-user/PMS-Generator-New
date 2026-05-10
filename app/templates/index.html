@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PMS Generator</title>
     <link rel="icon" type="image/png" href="/static/images/logo.png">
-    <link rel="stylesheet" href="/static/css/styles.css?v=10">
+    <link rel="stylesheet" href="/static/css/styles.css?v=11">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -225,23 +225,25 @@
                 </div>
 
                 <!-- ============================================================
-                     TAB 3 · Schedule & Wall Thickness — placeholder skeleton
+                     TAB 3 · Schedule & Wall Thickness
                      ============================================================ -->
                 <div class="report-tab-content" data-rtab="schedule">
                     <div class="report-header">
                         <h2 class="report-title">Schedule &amp; Wall Thickness <span class="report-title-meta">(ASME B31.3)</span></h2>
                         <p class="report-sub">Minimum wall thickness per ASME B31.3 Eq. 3a &amp; schedule selection per ASME B36.10M / B36.19M for all NPS sizes.</p>
                     </div>
-                    <div class="placeholder-card">
-                        <div class="placeholder-card-title">Pending data sources</div>
-                        <ul class="placeholder-list">
-                            <li><strong>NPS &rarr; OD / WT lookup</strong> &mdash; ASME B36.10M (CS/SS) and B36.19M (SS schedules)</li>
-                            <li><strong>Allowable stress S</strong> &mdash; ASME B31.3 Table A-1, by material grade and temperature</li>
-                            <li><strong>Y coefficient</strong> &mdash; ASME B31.3 Table 304.1.1, by material family and temperature</li>
-                            <li><strong>W-factor</strong> &mdash; ASME B31.3 Table 302.3.5 (weld strength reduction at temperature)</li>
-                            <li><strong>Material grade</strong> &mdash; e.g. CS pipe &rarr; A106 Gr B (also used by Tab 4)</li>
-                        </ul>
-                        <p class="placeholder-foot">Once these are wired, this tab renders <em>t<sub>req</sub> = (P&times;OD) / [2&times;(SE&middot;W + P&middot;Y)] + c</em> per NPS, with MAWP / margin / governs status per row, and engineering flags (NACE, LTCS, Y-temp limits).</p>
+
+                    <div class="service-strip" id="rServiceStrip"></div>
+
+                    <div class="two-col">
+                        <div class="card">
+                            <div class="card-title-underline">Design Parameters</div>
+                            <div class="kv-list" id="rDesignParamsList"></div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title-underline">Fabrication &amp; Code Factors</div>
+                            <div class="kv-list" id="rCodeFactorsList"></div>
+                        </div>
                     </div>
                 </div>
 
@@ -302,6 +304,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=10"></script>
+    <script src="/static/js/app.js?v=12"></script>
 </body>
 </html>

@@ -24,7 +24,7 @@ from functools import lru_cache
 from typing import Optional
 
 from app.config import settings
-from app.services import pt_lookup
+from app.services import pt_lookup, stress_lookup, y_lookup
 
 
 class ResolutionError(ValueError):
@@ -158,15 +158,61 @@ def derive_class_code(rating: str, material: str, ca: str) -> dict:
 def resolve(rating: str, material: str, ca: str, service: Optional[str] = None) -> dict:
     """Main entry point.
 
-    Returns the §5.5 class code plus its parts and the matching ASME B16.5
-    P-T table (when one is indexed for this rating/material). Raises
-    ResolutionError when the inputs don't fit the §5.5 rules (unknown rating,
-    or unknown material/CA pair — extend `class_naming.json` to fix)."""
+    Returns the §5.5 class code, the matching ASME B16.5 P-T table (when
+    one is indexed for this rating/material), and the per-material code
+    factor tables (allowable stress S vs T, Y coefficient vs T) so the
+    frontend can interpolate live as the user edits design conditions on
+    Tab 2 / Tab 3 without another round trip.
+
+    Raises ResolutionError when the inputs don't fit the §5.5 rules
+    (unknown rating, or unknown material/CA pair — extend
+    `class_naming.json` to fix)."""
     parts = derive_class_code(rating, material, ca)
     pt    = pt_lookup.find(rating, material)
+    code_factors = _build_code_factors(material, pt)
+
     return {
         **parts,
         "service":              (service or "").strip(),
         "note":                 f"Class {parts['class_code']} derived from §5.5 naming rules.",
         "pressure_temperature": pt,
+        "code_factors":         code_factors,
+    }
+
+
+def _build_code_factors(material: str, pt: Optional[dict]) -> dict:
+    """Bundle the stress-table row and Y-curve row that apply to this
+    material so the frontend can do live S(T) and Y(T) lookups.
+
+    Computes the cold-end S (S₁) immediately so the report card has
+    something to render before the user edits the design temperature."""
+    table_key = stress_lookup.detect_table(material)
+    stress_table = stress_lookup._data().get("tables", {}).get(table_key) if table_key else None  # noqa: SLF001
+    y_category   = y_lookup.detect_category(material)
+    y_block      = y_lookup._data().get("materials", {}).get(y_category)  # noqa: SLF001
+
+    # Cold-rated point (lowest indexed temp from the P-T envelope) is what
+    # the Excel uses as Case 1 — surface the S there so the GOVERNS marker
+    # has a real number, not a placeholder.
+    cold_t_c = None
+    if pt and pt.get("temperatures_c"):
+        cold_t_c = min(pt["temperatures_c"])
+    s_cold = stress_lookup.lookup(material, cold_t_c) if cold_t_c is not None else None
+
+    return {
+        "stress_table": stress_table and {
+            "key":              table_key,
+            "label":            stress_table.get("label"),
+            "stress_psi_by_temp_c": stress_table.get("stress_psi_by_temp_c"),
+            "max_temp_c":       stress_table.get("max_temp_c"),
+            "source_pdf_page":  stress_table.get("source_pdf_page"),
+        },
+        "y_curve": y_block and {
+            "category":      y_category,
+            "label":         y_block.get("label"),
+            "temperatures_c": y_lookup._data().get("temperatures_c"),  # noqa: SLF001
+            "y_values":       y_block.get("y_values"),
+        },
+        "cold_temp_c":   cold_t_c,
+        "stress_at_cold": s_cold,
     }

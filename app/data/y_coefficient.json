@@ -1,0 +1,103 @@
+{
+  "source": "ASME B31.3-2020 Table 304.1.1 (page 50)",
+  "title": "Values of Coefficient Y for t < D/6",
+  "validity": "t < D/6",
+  "interpolation": "Y may be linearly interpolated for intermediate temperatures, per §304.1.2",
+  "temperatures_c": [
+    482,
+    510,
+    538,
+    566,
+    593,
+    621,
+    649,
+    677
+  ],
+  "temperatures_f": [
+    900,
+    950,
+    1000,
+    1050,
+    1100,
+    1150,
+    1200,
+    1250
+  ],
+  "temp_qualifiers": [
+    "below",
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    "above"
+  ],
+  "materials": {
+    "ferritic_steels": {
+      "label": "Ferritic steels",
+      "y_values": [
+        0.4,
+        0.5,
+        0.7,
+        0.7,
+        0.7,
+        0.7,
+        0.7,
+        0.7
+      ]
+    },
+    "austenitic_steels": {
+      "label": "Austenitic steels",
+      "y_values": [
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.5,
+        0.7,
+        0.7,
+        0.7
+      ]
+    },
+    "nickel_alloys": {
+      "label": "Nickel alloys (UNS N06617, N08800, N08810, N08825)",
+      "y_values": [
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.5,
+        0.7
+      ]
+    },
+    "gray_iron": {
+      "label": "Gray iron",
+      "y_values": [
+        0.0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "other_ductile_metals": {
+      "label": "Other ductile metals",
+      "y_values": [
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.4
+      ]
+    }
+  }
+}
