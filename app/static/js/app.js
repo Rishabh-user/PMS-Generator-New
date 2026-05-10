@@ -161,17 +161,19 @@ async function loadOptions() {
 }
 
 function wireForm() {
-    const form = document.getElementById('pmsForm');
-    if (!form) return;
-    form.addEventListener('submit', e => {
-        e.preventDefault();
+    const btn = document.getElementById('generateBtn');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
         const payload = {
             pressure_rating:      document.getElementById('pipingClass').value.trim(),
             material:             document.getElementById('material').value.trim(),
             corrosion_allowance:  document.getElementById('corrosionAllowance').value.trim(),
             service:              document.getElementById('service').value.trim(),
+            design_pressure_barg: parseFloat(document.getElementById('designPressure')?.value) || null,
+            design_temperature_c: parseFloat(document.getElementById('designTemperature')?.value) || null,
         };
-        const missing = Object.entries(payload).filter(([, v]) => !v).map(([k]) => k);
+        const missing = ['pressure_rating', 'material', 'corrosion_allowance', 'service']
+            .filter(k => !payload[k]);
         if (missing.length) {
             showToast(`Please fill: ${missing.join(', ')}`, 'error');
             return;
@@ -192,6 +194,118 @@ function escapeHtml(s) {
     }[c]));
 }
 
+// Linear interpolation across the P-T curve. Clamps when T is outside the
+// indexed range (caller should treat that as a soft warning, but the value
+// itself is the closest valid rated point).
+function interpolatePressure(temps, pressures, targetT) {
+    if (!temps.length || !pressures.length) return null;
+    if (targetT <= temps[0]) return pressures[0];
+    if (targetT >= temps[temps.length - 1]) return pressures[pressures.length - 1];
+    for (let i = 0; i < temps.length - 1; i++) {
+        if (targetT >= temps[i] && targetT <= temps[i + 1]) {
+            const t1 = temps[i], t2 = temps[i + 1];
+            const p1 = pressures[i], p2 = pressures[i + 1];
+            return p1 + (p2 - p1) * (targetT - t1) / (t2 - t1);
+        }
+    }
+    return pressures[pressures.length - 1];
+}
+
+function renderDesignConditions(pt) {
+    // No section when there's no curve to interpolate against.
+    if (!pt || pt.pending || !pt.hottest_point) return '';
+    const defT = pt.hottest_point.temperature_c;
+    const defP = pt.hottest_point.pressure_barg;
+    return `
+        <div class="design-card">
+            <div class="design-card-title">Design conditions <span class="design-card-hint-tag">auto-filled from the P-T table — edit to override</span></div>
+            <div class="design-grid">
+                <div class="form-group">
+                    <label for="designPressure">Design Pressure (barg)</label>
+                    <input type="number" id="designPressure" step="0.1" value="${defP}">
+                </div>
+                <div class="form-group">
+                    <label for="designTemperature">Design Temperature (°C)</label>
+                    <input type="number" id="designTemperature" step="1" value="${defT}">
+                </div>
+            </div>
+            <p class="design-hint">Defaults to the hottest rated point (most conservative). Change Design Temperature and Design Pressure auto-syncs to the rated value at that temp.</p>
+        </div>
+    `;
+}
+
+function wireDesignInputs(pt) {
+    if (!pt || pt.pending) return;
+    const tempEl = document.getElementById('designTemperature');
+    const presEl = document.getElementById('designPressure');
+    if (!tempEl || !presEl) return;
+    const temps     = pt.temperatures_c || [];
+    const pressures = pt.pressures_barg || [];
+    if (!temps.length || !pressures.length) return;
+
+    tempEl.addEventListener('input', () => {
+        const t = parseFloat(tempEl.value);
+        if (Number.isNaN(t)) return;
+        const p = interpolatePressure(temps, pressures, t);
+        if (p == null) return;
+        presEl.value = (Number.isInteger(p) ? p.toFixed(1) : p.toFixed(2));
+    });
+}
+
+function renderPtTable(pt) {
+    if (!pt) {
+        return `
+            <div class="pt-card pt-card--missing">
+                <div class="pt-card-title">Pressure-Temperature table</div>
+                <p class="pt-card-empty">No P-T data indexed for this rating + material combination yet.</p>
+            </div>
+        `;
+    }
+    if (pt.pending) {
+        return `
+            <div class="pt-card pt-card--pending">
+                <div class="pt-card-title">Pressure-Temperature table</div>
+                <p class="pt-card-empty">${escapeHtml(pt.pending)}</p>
+            </div>
+        `;
+    }
+
+    const head = pt.temperatures_c.map((t, i) => {
+        const lbl = (pt.temp_labels && pt.temp_labels[i]) ? pt.temp_labels[i] : String(t);
+        return `<th>${escapeHtml(lbl)}</th>`;
+    }).join('');
+    const body = pt.pressures_barg.map(p => `<td>${escapeHtml(String(p))}</td>`).join('');
+
+    const cold = pt.cold_point;
+    const hot  = pt.hottest_point;
+    const hint = (cold && hot)
+        ? `<p class="pt-hint">Cold-rated point: <strong>${cold.pressure_barg} barg @ ${cold.temperature_c}°C</strong> · Hottest rated: <strong>${hot.pressure_barg} barg @ ${hot.temperature_c}°C</strong></p>`
+        : '';
+
+    return `
+        <div class="pt-card">
+            <div class="pt-card-title">Pressure-Temperature table <span class="pt-group-tag">ASME B16.5 · Group ${escapeHtml(pt.group)}</span></div>
+            <div class="pt-table-wrap">
+                <table class="pt-mini-table">
+                    <thead>
+                        <tr>
+                            <th class="pt-row-head">Temperature (°C)</th>
+                            ${head}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="pt-row-head">Pressure (barg)</td>
+                            ${body}
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            ${hint}
+        </div>
+    `;
+}
+
 function renderResolution(panel, data) {
     panel.style.display = 'block';
     panel.classList.remove('derived', 'error');
@@ -200,15 +314,11 @@ function renderResolution(panel, data) {
     panel.innerHTML = `
         <div class="resolution-header">
             <span class="resolution-code">${escapeHtml(data.class_code)}</span>
-            <span class="resolution-tag derived">Derived from §5.5</span>
         </div>
-        <div class="resolution-note">${escapeHtml(data.note)}</div>
-        <div class="resolution-meta">
-            <span><b>Letter:</b> ${escapeHtml(data.letter)}</span>
-            <span><b>Digit:</b> ${escapeHtml(data.digit)}</span>
-            <span><b>Suffix:</b> ${escapeHtml(data.suffix || '—')}</span>
-        </div>
+        ${renderPtTable(data.pressure_temperature)}
+        ${renderDesignConditions(data.pressure_temperature)}
     `;
+    wireDesignInputs(data.pressure_temperature);
 }
 
 function renderResolutionError(panel, message) {
@@ -234,12 +344,15 @@ function initClassResolver() {
     // Sequence-protect against fast clicks: only the latest request wins.
     let seq = 0;
 
+    const btn = document.getElementById('generateBtn');
+
     async function tryResolve() {
         const r = rating.value.trim();
         const m = material.value.trim();
         const c = ca.value.trim();
         if (!r || !m || !c) {
             panel.style.display = 'none';
+            if (btn) btn.disabled = true;
             return;
         }
         const my = ++seq;
@@ -254,9 +367,11 @@ function initClassResolver() {
             const data = await res.json();
             if (!res.ok) {
                 renderResolutionError(panel, data.detail || `HTTP ${res.status}`);
+                if (btn) btn.disabled = true;
                 return;
             }
             renderResolution(panel, data);
+            if (btn) btn.disabled = false;
         } catch (e) {
             if (my !== seq) return;
             renderResolutionError(panel, `Network error: ${e}`);

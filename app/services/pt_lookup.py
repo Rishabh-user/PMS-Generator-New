@@ -1,0 +1,112 @@
+"""Pressure-Temperature table lookup.
+
+Given a (rating, material) pair, find the matching ASME B16.5 group in
+`app/data/pt_tables.json` automatically — the JSON's per-group `materials`
+arrays drive material→group mapping, so adding a new material is a JSON
+edit, not a code change. No hardcoded material→group dict anywhere.
+
+Returned shape (or None when no data):
+    {
+        "group":           "1.1",
+        "temperatures_c":  [...],
+        "pressures_barg":  [...],
+        "temp_labels":     [...],
+        "cold_point":      {"pressure_barg": 19.6, "temperature_c": 38},
+        "hottest_point":   {"pressure_barg": 10.2, "temperature_c": 300},
+    }
+"""
+from __future__ import annotations
+
+import json
+import re
+from functools import lru_cache
+from typing import Optional
+
+from app.config import settings
+
+
+@lru_cache(maxsize=1)
+def _data() -> dict:
+    return json.loads((settings.data_dir / "pt_tables.json").read_text(encoding="utf-8"))
+
+
+def reload() -> None:
+    _data.cache_clear()
+
+
+def _norm(s: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().upper())
+
+
+def _rating_key(rating: str) -> str:
+    """'150#' → '150', '1500#' → '1500'. Whitespace + '#' stripped.
+
+    Returns the original (uppercased) string for non-numeric ratings like
+    'Tubing' / 'EEMUA 20 bar' so a future JSON could index those too."""
+    cleaned = _norm(rating).rstrip("#").strip()
+    if cleaned.isdigit():
+        return cleaned
+    return cleaned
+
+
+def _clean_material(material: str) -> str:
+    """Strip parenthetical qualifiers ('(Valve: SS)' / '(Tubing)') so user
+    input matches JSON entries that omit them. Keeps NACE / LTCS markers
+    because the JSON's `materials` arrays list those variants explicitly."""
+    raw = _norm(material)
+    raw = re.sub(r"\(.*?\)", "", raw).strip()
+    raw = re.sub(r"\s+", " ", raw)
+    return raw
+
+
+def find(rating: str, material: str) -> Optional[dict]:
+    """Locate the (rating, group) entry whose `materials` array contains
+    `material`. Returns None when no match — caller decides what to do
+    (show "no data", call AI fallback, etc.)."""
+    if not rating or not material:
+        return None
+
+    rating_key = _rating_key(rating)
+    # Case-insensitive rating-key match so 'EEMUA 20 bar' / 'EEMUA 20 BAR' /
+    # 'eemua 20 bar' all hit the same JSON entry.
+    rating_block = None
+    for k, v in _data().get("ratings", {}).items():
+        if _norm(k).rstrip("#").strip() == rating_key:
+            rating_block = v
+            break
+    if not rating_block:
+        return None
+    if rating_block.get("pending"):
+        # Indexed, but no authoritative data yet — surface to caller so the
+        # UI can show "pending engineering review" rather than a blank.
+        return {"pending": rating_block["pending"], "rating": rating_key}
+
+    groups = rating_block.get("groups", {})
+    target = _clean_material(material)
+
+    for group_id, group in groups.items():
+        materials_norm = {_norm(m) for m in group.get("materials", [])}
+        if target in materials_norm:
+            temps    = list(group.get("temperatures_c", []))
+            pressures = list(group.get("pressures_barg", []))
+            labels   = list(group.get("temp_labels", []))
+
+            cold_idx = pressures.index(max(pressures)) if pressures else None
+            hot_idx  = temps.index(max(temps)) if temps else None
+
+            return {
+                "group":           group_id,
+                "temperatures_c":  temps,
+                "pressures_barg":  pressures,
+                "temp_labels":     labels,
+                "cold_point": (
+                    {"pressure_barg": pressures[cold_idx], "temperature_c": temps[cold_idx]}
+                    if cold_idx is not None else None
+                ),
+                "hottest_point": (
+                    {"pressure_barg": pressures[hot_idx], "temperature_c": temps[hot_idx]}
+                    if hot_idx is not None else None
+                ),
+            }
+
+    return None

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PMS Generator</title>
     <link rel="icon" type="image/png" href="/static/images/logo.png">
-    <link rel="stylesheet" href="/static/css/styles.css?v=1">
+    <link rel="stylesheet" href="/static/css/styles.css?v=6">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -71,20 +71,24 @@
                             </div>
                             <input type="hidden" id="service" required>
                         </div>
-                        <div class="form-actions full-width">
-                            <button type="submit" class="btn btn-primary" id="generateBtn">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                                Generate PMS
-                            </button>
-                        </div>
                     </form>
                 </div>
 
                 <!-- Class resolution panel — populated by app.js whenever
                      Rating + Material + Corrosion Allowance are all chosen.
-                     Shows the §5.5 class code and whether it's catalogued
-                     in the Excel or a derived (new) combination. -->
+                     Shows the §5.5 class code, the matching ASME B16.5
+                     P-T table, and the design-conditions inputs. -->
                 <div id="classResolution" class="resolution-card" style="display:none"></div>
+
+                <!-- Generate action — sits below the resolution card so the
+                     user reviews the derived class + P-T + design point
+                     before committing. Disabled until inputs are valid. -->
+                <div class="generate-bar">
+                    <button type="button" class="btn btn-primary btn-lg" id="generateBtn" disabled>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                        Generate PMS
+                    </button>
+                </div>
             </div>
 
         </section>
@@ -101,6 +105,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=1"></script>
+    <script src="/static/js/app.js?v=6"></script>
 </body>
 </html>

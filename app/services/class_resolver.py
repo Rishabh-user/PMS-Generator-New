@@ -24,6 +24,7 @@ from functools import lru_cache
 from typing import Optional
 
 from app.config import settings
+from app.services import pt_lookup
 
 
 class ResolutionError(ValueError):
@@ -157,12 +158,15 @@ def derive_class_code(rating: str, material: str, ca: str) -> dict:
 def resolve(rating: str, material: str, ca: str, service: Optional[str] = None) -> dict:
     """Main entry point.
 
-    Returns the §5.5 class code plus its parts. Raises ResolutionError when
-    the inputs don't fit the rules (unknown rating, or unknown material/CA
-    pair — extend `class_naming.json` to fix)."""
+    Returns the §5.5 class code plus its parts and the matching ASME B16.5
+    P-T table (when one is indexed for this rating/material). Raises
+    ResolutionError when the inputs don't fit the §5.5 rules (unknown rating,
+    or unknown material/CA pair — extend `class_naming.json` to fix)."""
     parts = derive_class_code(rating, material, ca)
+    pt    = pt_lookup.find(rating, material)
     return {
         **parts,
-        "service": (service or "").strip(),
-        "note":    f"Class {parts['class_code']} derived from §5.5 naming rules.",
+        "service":              (service or "").strip(),
+        "note":                 f"Class {parts['class_code']} derived from §5.5 naming rules.",
+        "pressure_temperature": pt,
     }

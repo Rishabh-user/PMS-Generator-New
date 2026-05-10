@@ -643,7 +643,7 @@ label.multi-select-option > span { flex: 1; }
     gap: 8px;
     border-left: 4px solid var(--text-muted);
 }
-.resolution-card.derived  { border-left-color: #d97706; background: #fffbeb; }
+.resolution-card.derived  { border-left-color: #0e3a5c; background: #f0f6fc; }
 .resolution-card.error    { border-left-color: #dc2626; background: #fef2f2; }
 .resolution-header {
     display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
@@ -665,7 +665,7 @@ label.multi-select-option > span { flex: 1; }
     letter-spacing: 0.5px;
     color: #ffffff;
 }
-.resolution-tag.derived  { background: #d97706; }
+.resolution-tag.derived  { background: #0e3a5c; }
 .resolution-tag.error    { background: #dc2626; }
 .resolution-note {
     color: var(--text-secondary);
@@ -678,6 +678,151 @@ label.multi-select-option > span { flex: 1; }
     margin-top: 6px;
 }
 .resolution-meta b { color: var(--text-secondary); font-weight: 600; }
+
+/* ----- P-T mini-table (rendered inside the resolution card) ----- */
+.pt-card {
+    margin-top: 14px;
+    padding: 16px 0 0;
+    border-top: 1px solid #f1f5f9;
+}
+.pt-card-title {
+    font-weight: 700;
+    font-size: 0.78rem;
+    color: #0e3a5c;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.pt-group-tag {
+    background: #0e3a5c;
+    color: #ffffff;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0.3px;
+}
+.pt-mini-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #ffffff;
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    font-size: 0.85rem;
+}
+.pt-mini-table th, .pt-mini-table td {
+    padding: 10px 14px;
+    text-align: center;
+    white-space: nowrap;
+    border-bottom: 1px solid #f1f5f9;
+}
+.pt-mini-table th {
+    background: #f8fafc;
+    color: var(--text);
+    font-weight: 600;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.pt-mini-table .pt-row-head {
+    background: #f1f5f9;
+    color: #0e3a5c;
+    font-weight: 700;
+    text-align: left;
+    min-width: 160px;
+    border-right: 1px solid #e2e8f0;
+}
+.pt-mini-table tbody tr:hover td:not(.pt-row-head) { background: #f8fafc; }
+.pt-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 10px;
+    line-height: 1.5;
+}
+.pt-card--missing .pt-card-empty,
+.pt-card--pending .pt-card-empty {
+    padding: 14px 18px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+}
+.pt-card--pending .pt-card-empty {
+    background: #fffbeb;
+    border-color: #fde68a;
+    color: #92400e;
+}
+
+/* ----- Design conditions sub-panel (under the P-T table) ----- */
+.design-card {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid #e2e8f0;
+}
+.design-card-title {
+    font-weight: 700;
+    font-size: 0.78rem;
+    color: #0e3a5c;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.design-card-hint-tag {
+    font-weight: 500;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    text-transform: none;
+    letter-spacing: 0.2px;
+}
+.design-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 10px;
+}
+/* Tighter than the main form group spacing — section is dense enough */
+.design-card .form-group label {
+    font-size: 0.74rem;
+    margin-bottom: 5px;
+}
+.design-card .form-group input {
+    padding: 10px 14px;
+    font-size: 0.88rem;
+}
+.design-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    font-style: italic;
+}
+
+/* ----- Generate action bar (sits below the resolution card) ----- */
+.generate-bar {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 22px;
+    padding-top: 6px;
+}
+.btn-lg {
+    padding: 14px 36px;
+    font-size: 0.95rem;
+}
+.btn-primary:disabled {
+    background: #94a3b8;
+    box-shadow: none;
+    cursor: not-allowed;
+    transform: none;
+}
+.btn-primary:disabled:hover {
+    background: #94a3b8;
+    box-shadow: none;
+    transform: none;
+}
 
 /* ================================================================
    PMS CODE BANNER — Clean professional style
