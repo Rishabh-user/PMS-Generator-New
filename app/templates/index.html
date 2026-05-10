@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PMS Generator</title>
     <link rel="icon" type="image/png" href="/static/images/logo.png">
-    <link rel="stylesheet" href="/static/css/styles.css?v=16">
+    <link rel="stylesheet" href="/static/css/styles.css?v=18">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -279,25 +279,72 @@
                             </tbody>
                         </table>
                     </div>
+
+                    <!-- Summary Statistics + Tag Legend — populated by JS
+                         from the same Wall Thickness rows the table uses. -->
+                    <div class="two-col" style="margin-top:18px">
+                        <div class="card summary-card">
+                            <div class="card-title-underline">Summary Statistics</div>
+                            <div class="kv-list" id="rSummaryStats"></div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title-underline">Tag Legend</div>
+                            <div id="rTagLegend"></div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- ============================================================
-                     TAB 4 · Pipe & Fittings Material — placeholder skeleton
+                     TAB 4 · Pipe & Fittings Material Assignment
                      ============================================================ -->
                 <div class="report-tab-content" data-rtab="materials">
                     <div class="report-header">
                         <h2 class="report-title">Pipe &amp; Fittings Material Assignment</h2>
                         <p class="report-sub">Material codes assigned for pipes, elbows, tees, reducers, and branch fittings per specification.</p>
                     </div>
-                    <div class="placeholder-card">
-                        <div class="placeholder-card-title">Pending data sources</div>
-                        <ul class="placeholder-list">
-                            <li><strong>Pipe material grade</strong> &mdash; CS &rarr; A106 Gr B, LTCS &rarr; A333 Gr 6, SS316L &rarr; A312 TP316L, etc.</li>
-                            <li><strong>Fitting material</strong> &mdash; CS &rarr; A234 WPB, LTCS &rarr; A420 WPL6, SS316L &rarr; A403 WP316L, etc.</li>
-                            <li><strong>Connection rules</strong> &mdash; small bore vs large bore (e.g. NPS &le; 2" &rarr; SCH 160 / SW; NPS &ge; 2.5" &rarr; BW &times; pipe schedule)</li>
-                            <li><strong>Branch chart</strong> &mdash; weldolet / sockolet / equal tee / reducing tee &mdash; per project Appendix-1</li>
-                        </ul>
-                        <p class="placeholder-foot">Renders Small Bore + Large Bore tables (Component &middot; Material &middot; Schedule/Class &middot; Standard) once material maps are wired.</p>
+
+                    <!-- Small Bore section: NPS ½ – 2" -->
+                    <div class="bore-section">
+                        <h3 class="bore-section-header">Small Bore <span class="bore-range">(NPS ½" – 2")</span></h3>
+                        <div class="bore-info-bar" id="rSmallBoreInfo"></div>
+                        <div class="card" style="padding:0">
+                            <table class="component-table">
+                                <thead>
+                                    <tr>
+                                        <th>Component</th>
+                                        <th>Material</th>
+                                        <th>Schedule/Class</th>
+                                        <th>Standard</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="rSmallBoreBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Large Bore section: NPS 2½ – 36" -->
+                    <div class="bore-section" style="margin-top:24px">
+                        <h3 class="bore-section-header">Large Bore <span class="bore-range">(NPS 2½" – 36")</span></h3>
+                        <div class="bore-info-bar" id="rLargeBoreInfo"></div>
+                        <div class="card" style="padding:0">
+                            <table class="component-table">
+                                <thead>
+                                    <tr>
+                                        <th>Component</th>
+                                        <th>Material</th>
+                                        <th>Schedule/Class</th>
+                                        <th>Standard</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="rLargeBoreBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Branch Connection Chart card -->
+                    <div class="card" style="margin-top:24px">
+                        <div class="card-title-underline">Branch Connection Chart</div>
+                        <div id="rBranchChart" class="branch-chart-ref"></div>
                     </div>
                 </div>
 
@@ -338,6 +385,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=18"></script>
+    <script src="/static/js/app.js?v=20"></script>
 </body>
 </html>

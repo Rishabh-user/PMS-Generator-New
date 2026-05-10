@@ -558,6 +558,34 @@ function computeWallThicknessRows(state, designPbarg, designTc) {
         const tm      = (t_mm != null) ? t_mm + C_mm : null;
         const calcThk = (tm != null) ? tm / (1 - millTol) : null;
 
+        // Schedule pick from B36.10M §9: lightest WT ≥ Calc.Thk.
+        const sched = (calcThk != null) ? pickSchedule(parseFloat(r.nps), calcThk) : null;
+        const sel_thk_mm  = sched ? sched.wt_mm : null;
+        const sch_display = sched ? sched.sch_display : null;
+        const sch_status  = sched ? sched.status : null;
+
+        // MAWP @ design T, per B31.3 inverted Eq. 3a:
+        //   P_max = 2·S·E·W·t_eff / (D − 2·Y·t_eff)
+        //   t_eff = SEL.THK·(1 − mill) − c   (worst-case actual wall after
+        //                                      mill undertolerance + CA)
+        let mawp_barg  = null;
+        let margin_pct = null;
+        if (sel_thk_mm != null && S2_psi != null && Number.isFinite(W)) {
+            const t_eff_mm = sel_thk_mm * (1 - millTol) - C_mm;
+            if (t_eff_mm > 0) {
+                const t_eff_in = t_eff_mm / 25.4;
+                const D_in     = D / 25.4;
+                const denom    = D_in - 2 * Y * t_eff_in;
+                if (denom > 0) {
+                    const mawp_psi = (2 * S2_psi * E * W * t_eff_in) / denom;
+                    mawp_barg = mawp_psi / 14.5038;
+                    if (designPbarg && designPbarg > 0) {
+                        margin_pct = ((mawp_barg - designPbarg) / designPbarg) * 100;
+                    }
+                }
+            }
+        }
+
         return {
             nps:      r.nps,
             od_mm:    D,
@@ -567,8 +595,231 @@ function computeWallThicknessRows(state, designPbarg, designTc) {
             tm_mm:    tm,
             mill_tol: millTol,
             calc_thk_mm: calcThk,
+            sch_display,
+            sel_thk_mm,
+            sch_status,
+            mawp_barg,
+            margin_pct,
         };
     });
+}
+
+// ---------------------------------------------------------------------------
+// Summary Statistics card — aggregates MAWP / margin / hydrotest across
+// every NPS row in the Wall Thickness table. Same computation source so
+// the numbers never disagree.
+// ---------------------------------------------------------------------------
+function renderSummaryStats(state, designPbarg, designTc) {
+    const container = document.getElementById('rSummaryStats');
+    if (!container) return;
+
+    const rows = (state && designPbarg != null && designTc != null && !Number.isNaN(designPbarg) && !Number.isNaN(designTc))
+        ? computeWallThicknessRows(state, designPbarg, designTc)
+        : [];
+
+    const mawps   = rows.map(r => r.mawp_barg).filter(v => v != null && Number.isFinite(v));
+    const margins = rows.map(r => r.margin_pct).filter(v => v != null && Number.isFinite(v));
+
+    // Hydrotest = max rated P × 1.5 per B31.3 §345.4.2(a)
+    const maxRatedPbarg = state && state.pt && state.pt.pressures_barg && state.pt.pressures_barg.length
+        ? Math.max(...state.pt.pressures_barg)
+        : (designPbarg || null);
+    const hydroBarg = maxRatedPbarg != null ? maxRatedPbarg * 1.5 : null;
+
+    const minMawp = mawps.length   ? Math.min(...mawps)   : null;
+    const maxMawp = mawps.length   ? Math.max(...mawps)   : null;
+    const minMargin = margins.length ? Math.min(...margins) : null;
+
+    const fmt = (v, unit, dp = 1) =>
+        v == null || Number.isNaN(v)
+            ? '<span class="kv-value" style="color:var(--text-muted)">—</span>'
+            : `<span class="kv-value">${v.toFixed(dp)}${unit ? ' ' + unit : ''}</span>`;
+    const fmtBold = (v, unit, dp = 1) =>
+        v == null || Number.isNaN(v)
+            ? '<span class="kv-value bold">—</span>'
+            : `<span class="kv-value bold">${v.toFixed(dp)}${unit ? ' ' + unit : ''}</span>`;
+
+    container.innerHTML = [
+        `<div class="kv-row"><span class="kv-label">Min MAWP</span>${fmt(minMawp, 'barg')}</div>`,
+        `<div class="kv-row"><span class="kv-label">Max MAWP</span>${fmt(maxMawp, 'barg')}</div>`,
+        `<div class="kv-row"><span class="kv-label">Min Pressure Margin</span>${fmt(minMargin, '%', 1)}</div>`,
+        `<div class="kv-row"><span class="kv-label">Hydrotest Pressure (1.5×P)</span>${fmtBold(hydroBarg, 'barg')}</div>`,
+        `<div class="kv-row"><span class="kv-label">Total NPS Sizes</span><span class="kv-value">${rows.length}</span></div>`,
+    ].join('');
+}
+
+// ---------------------------------------------------------------------------
+// Tab 4 — Pipe & Fittings Material Assignment
+//
+// Two component tables (Small Bore / Large Bore) + a branch-chart card.
+// Material specs come from code_factors.fitting_specs (per material family,
+// industry-standard ASTM/ASME combinations). Schedule per bore is derived
+// from the same Wall Thickness rows the Tab 3 table uses — picked from
+// the dominant NPS in each bore range.
+// ---------------------------------------------------------------------------
+
+// Connection wording matches the project's Excel screenshots:
+//   small bore → typ. seamless pipe with butt-weld (or socket weld) fittings
+//   large bore → welded pipe acceptable, butt-weld throughout
+// `material_family` from fitting_specs lets us tweak this for SS / DSS
+// where fully welded is the norm even at small bore.
+function _connectionWording(family, isLargeBore) {
+    if (!family) return '—';
+    if (isLargeBore) return 'Butt Weld (SCH to match pipe), Welded';
+    // Small bore: copper / GRE / CPVC use sweat / threaded / solvent-weld
+    if (/COPPER/i.test(family))   return 'Sweat / threaded fitting per B16.22';
+    if (/GRE/i.test(family))      return 'Adhesive bonded / threaded per ISO 14692';
+    if (/CPVC/i.test(family))     return 'Solvent weld per ASTM F 493';
+    if (/TUBING/i.test(family))   return 'Compression / cone & thread (Swagelok)';
+    return 'Butt Weld (SCH to match pipe), Seamless';
+}
+
+// Find the dominant schedule across an NPS range. Returns the most common
+// schedule string in that range — engineers spec one schedule per bore-band
+// rather than one per NPS, so "mode" is the right aggregate.
+function _dominantScheduleInRange(rows, npsLo, npsHi) {
+    const counts = {};
+    for (const r of rows || []) {
+        const nps = parseFloat(r.nps);
+        if (Number.isNaN(nps) || nps < npsLo || nps > npsHi) continue;
+        if (!r.sch_display) continue;
+        counts[r.sch_display] = (counts[r.sch_display] || 0) + 1;
+    }
+    let best = null, bestN = 0;
+    for (const [sch, n] of Object.entries(counts)) {
+        if (n > bestN) { best = sch; bestN = n; }
+    }
+    return best;
+}
+
+// One row block in a component table. The standard column carries the
+// reference standard for that fitting type — these stay constant across
+// material families (B16.9 covers the geometry; the metallurgy comes from
+// the spec column).
+const _COMPONENT_ROWS = [
+    { name: '90° LR Elbow',        spec_key: 'fittings',     sch_kind: 'pipe',      standard: 'ASME B 16.9' },
+    { name: '45° Elbow',           spec_key: 'fittings',     sch_kind: 'pipe',      standard: 'ASME B 16.9' },
+    { name: 'Equal Tee',           spec_key: 'fittings',     sch_kind: 'pipe',      standard: 'ASME B 16.9' },
+    { name: 'Reducing Tee',        spec_key: 'fittings',     sch_kind: 'pipe',      standard: 'ASME B 16.9' },
+    { name: 'Concentric Reducer',  spec_key: 'fittings',     sch_kind: 'pipe',      standard: 'ASME B 16.9' },
+    { name: 'Eccentric Reducer',   spec_key: 'fittings',     sch_kind: 'pipe',      standard: 'ASME B 16.9' },
+    { name: 'Pipe Cap',            spec_key: 'fittings',     sch_kind: 'b16.9',     standard: 'ASME B 16.9' },
+    { name: 'Plug',                spec_key: 'fittings',     sch_kind: '—',         standard: 'Hex Head Plug, ASME B 16.11' },
+    { name: 'Weldolet',            spec_key: 'branch_outlet',sch_kind: '—',         standard: 'MSS SP-97' },
+];
+
+function _formatSchedule(kind, schDisp) {
+    if (kind === '—' || !schDisp) return '—';
+    if (kind === 'b16.9')         return 'ASME B 16.9';
+    if (schDisp.startsWith('Sch')) return schDisp;
+    // For pipe-matching fittings the convention is "Sch <num> / XS" if the
+    // schedule has both numeric + identification representations; when it's
+    // just identification we surface that. Single-token fallback otherwise.
+    return `Sch ${schDisp}`;
+}
+
+function _fittingSchedule(kind, pipeSchDisp) {
+    if (kind === '—' || !pipeSchDisp) return '—';
+    if (kind === 'b16.9') return 'ASME B 16.9';
+    // Component fittings track the pipe schedule. We surface both the
+    // numeric and identification forms when both exist (e.g. "Sch 80 / XS").
+    // Without the underlying row's identification handy here, just prefix.
+    return `Sch ${pipeSchDisp}`;
+}
+
+function renderPipeFittingsTab(state, designPbarg, designTc) {
+    const cf    = (state && state.codeFactors) || {};
+    const specs = cf.fitting_specs;
+    const small = document.getElementById('rSmallBoreBody');
+    const large = document.getElementById('rLargeBoreBody');
+    const smallInfo = document.getElementById('rSmallBoreInfo');
+    const largeInfo = document.getElementById('rLargeBoreInfo');
+    const branch    = document.getElementById('rBranchChart');
+    if (!small || !large) return;
+
+    if (!specs) {
+        const empty = '<div class="bore-info-bar-empty">No fitting spec mapped for this material — pending project data source.</div>';
+        smallInfo && (smallInfo.outerHTML = empty.replace('id-x', 'rSmallBoreInfo'));
+        largeInfo && (largeInfo.outerHTML = empty);
+        small.innerHTML = '';
+        large.innerHTML = '';
+        if (branch) branch.textContent = '—';
+        return;
+    }
+
+    // Dynamic schedule selection from the Wall Thickness table rows.
+    const rows = (state && designPbarg != null && designTc != null && !Number.isNaN(designPbarg) && !Number.isNaN(designTc))
+        ? computeWallThicknessRows(state, designPbarg, designTc)
+        : [];
+    const smallSch = _dominantScheduleInRange(rows, 0, 2)   || '—';
+    const largeSch = _dominantScheduleInRange(rows, 2.5, 80) || '—';
+
+    const fmtSch = (s) => /^[A-Z]{2,}$/.test(s) ? s : `SCH ${s}`;
+
+    // Info bars
+    if (smallInfo) {
+        smallInfo.innerHTML = `<strong>Connection:</strong> ${escapeHtml(_connectionWording(specs.family, false))}
+            &nbsp;&nbsp;|&nbsp;&nbsp; <strong>Schedule:</strong> ${escapeHtml(fmtSch(smallSch))}`;
+    }
+    if (largeInfo) {
+        largeInfo.innerHTML = `<strong>Connection:</strong> ${escapeHtml(_connectionWording(specs.family, true))}
+            &nbsp;&nbsp;|&nbsp;&nbsp; <strong>Schedule:</strong> ${escapeHtml(fmtSch(largeSch))}`;
+    }
+
+    // Build one tbody for each bore.
+    function buildBody(boreSch) {
+        const rows = [];
+        // Pipe row first
+        rows.push(`
+            <tr>
+                <td class="comp-name">Pipe</td>
+                <td>${escapeHtml(specs.pipe || '—')}</td>
+                <td>${escapeHtml(fmtSch(boreSch))}</td>
+                <td>ASTM</td>
+            </tr>
+        `);
+        for (const c of _COMPONENT_ROWS) {
+            const mat = specs[c.spec_key] || '—';
+            const sch = _fittingSchedule(c.sch_kind, boreSch);
+            rows.push(`
+                <tr>
+                    <td class="comp-name">${escapeHtml(c.name)}</td>
+                    <td>${escapeHtml(mat)}</td>
+                    <td>${escapeHtml(sch)}</td>
+                    <td>${escapeHtml(c.standard)}</td>
+                </tr>
+            `);
+        }
+        return rows.join('');
+    }
+
+    small.innerHTML = buildBody(smallSch);
+    large.innerHTML = buildBody(largeSch);
+
+    // Branch-chart reference. Until we wire a per-class chart map, surface
+    // the project convention "Ref. APPENDIX-1, Chart 1".
+    if (branch) {
+        branch.textContent = 'Ref. APPENDIX-1, Chart 1';
+    }
+}
+
+function renderTagLegend(state) {
+    const container = document.getElementById('rTagLegend');
+    if (!container) return;
+    // Tags that can appear on per-NPS rows. Right now Eq. 3a always
+    // governs every row (we don't distinguish pressure-thickness from
+    // PMS-minimum or hand-calculated), so the legend shows one entry.
+    // More tags (NACE / LTCS / GOVERNS-PMS-MIN / CUSTOM) get added here
+    // when the table starts tagging rows.
+    const items = [
+        { cls: 'pressure', label: 'Pressure', desc: 'ASME B31.3 Eq. 3a governs' },
+    ];
+    container.innerHTML = items.map(it => `
+        <div class="legend-row">
+            <span class="pipe-tag pipe-tag-${it.cls}">${escapeHtml(it.label)}</span>
+            <span class="legend-desc">${escapeHtml(it.desc)}</span>
+        </div>
+    `).join('');
 }
 
 function populateWallThicknessTable(state, designPbarg, designTc) {
@@ -589,15 +840,11 @@ function populateWallThicknessTable(state, designPbarg, designTc) {
 
     if (computed) {
         tbody.innerHTML = computed.map(r => {
-            const validClass = r.validity === 'ALERT' ? 'wt-alert' : (r.validity === 'OK' ? 'wt-ok' : '');
-
-            // Dynamic schedule pick from B36.10M §9 (lightest WT ≥ Calc.Thk).
-            const npsKey = parseFloat(r.nps);
-            const sched  = (r.calc_thk_mm != null) ? pickSchedule(npsKey, r.calc_thk_mm) : null;
-            const schDisp     = sched ? sched.sch_display : blank;
-            const selThkDisp  = sched ? sched.wt_mm.toFixed(2) : blank;
-            const statusDisp  = sched ? sched.status : blank;
-            const statusClass = sched ? (sched.status === 'OK' ? 'wt-ok' : 'wt-alert') : '';
+            const validClass  = r.validity === 'ALERT' ? 'wt-alert' : (r.validity === 'OK' ? 'wt-ok' : '');
+            const schDisp     = r.sch_display != null ? r.sch_display : blank;
+            const selThkDisp  = r.sel_thk_mm != null ? r.sel_thk_mm.toFixed(2) : blank;
+            const statusDisp  = r.sch_status != null ? r.sch_status : blank;
+            const statusClass = r.sch_status === 'OK' ? 'wt-ok' : (r.sch_status === 'NOT OK' ? 'wt-alert' : '');
 
             return `
                 <tr>
@@ -609,7 +856,7 @@ function populateWallThicknessTable(state, designPbarg, designTc) {
                     <td>${fmtMm(r.tm_mm)}</td>
                     <td>${(r.mill_tol * 100).toFixed(1)}%</td>
                     <td>${fmtMm(r.calc_thk_mm)}</td>
-                    <td>${escapeHtml(schDisp)}</td>
+                    <td>${escapeHtml(String(schDisp))}</td>
                     <td>${escapeHtml(selThkDisp)}</td>
                     <td class="${statusClass}">${escapeHtml(statusDisp)}</td>
                 </tr>
@@ -1136,6 +1383,9 @@ function wireReportInputs(state) {
         populateWallThicknessTable(state, dp, dt);
         renderFormulaCard(state, dp, dt);
         renderFlags(evaluateFlags(state, dp, dt, md));
+        renderSummaryStats(state, dp, dt);
+        renderTagLegend(state);
+        renderPipeFittingsTab(state, dp, dt);
     };
 
     pBarg.addEventListener('input', () => {
@@ -1198,6 +1448,9 @@ function showReport(state) {
     ]).then(() => {
         populateWallThicknessTable(state, state.designP, state.designT);
         renderFormulaCard(state, state.designP, state.designT);
+        renderSummaryStats(state, state.designP, state.designT);
+        renderTagLegend(state);
+        renderPipeFittingsTab(state, state.designP, state.designT);
     });
     // Always land on the first tab when (re)opening the report.
     document.querySelectorAll('.report-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
