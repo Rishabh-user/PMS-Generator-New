@@ -1,0 +1,17 @@
+{
+  "_meta": {
+    "source": "Project §5.5 — Titanium Gr. 2 pipe (ASTM B 861, dimensions per ASME B 36.10M)",
+    "applies_to": "Titanium class A70 (Chemical / Ferric chloride / Coagulant)",
+    "note": "Sch and WT are project-mandated per NPS (not derived from B31.3 picker). Sch 40 for ≤3\", Sch 10 for ≥4\". WT shown is the actual project-selected wall."
+  },
+  "rows": [
+    { "nps": "0.5",  "nps_decimal": 0.5,  "od_mm": 21.3,  "sch": "40", "wt_mm": 2.77 },
+    { "nps": "0.75", "nps_decimal": 0.75, "od_mm": 26.7,  "sch": "40", "wt_mm": 2.87 },
+    { "nps": "1",    "nps_decimal": 1.0,  "od_mm": 33.4,  "sch": "40", "wt_mm": 3.38 },
+    { "nps": "1.5",  "nps_decimal": 1.5,  "od_mm": 48.3,  "sch": "40", "wt_mm": 3.68 },
+    { "nps": "2",    "nps_decimal": 2.0,  "od_mm": 60.3,  "sch": "40", "wt_mm": 3.91 },
+    { "nps": "3",    "nps_decimal": 3.0,  "od_mm": 88.9,  "sch": "40", "wt_mm": 5.49 },
+    { "nps": "4",    "nps_decimal": 4.0,  "od_mm": 114.3, "sch": "10", "wt_mm": 3.05 },
+    { "nps": "6",    "nps_decimal": 6.0,  "od_mm": 168.3, "sch": "10", "wt_mm": 3.40 }
+  ]
+}

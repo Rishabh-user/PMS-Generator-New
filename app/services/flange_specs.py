@@ -101,6 +101,15 @@ def _is_cpvc(material: str) -> bool:
     return bool(re.search(r"\bCPVC\b", material, re.I))
 
 
+def _is_titanium(material: str) -> bool:
+    """Project digit 70 — Titanium Gr. 2 (ASTM B 861). Chemical service
+    (Ferric chloride / Coagulant). PEEK-seated valves, CNAF flat-ring
+    gasket with insulating note on bolting."""
+    if not material:
+        return False
+    return bool(re.search(r"\bTITANIUM\b|\bTi\b|B861", material, re.I))
+
+
 def _is_copper(material: str) -> bool:
     """Project digit 40 — pure Copper (UNS C12200). Distinct from CuNi
     (90/10 Cu-Ni alloy, digit 30) — Copper is the bare metal."""
@@ -178,12 +187,21 @@ def bolting(material: str) -> dict:
     copper = _is_copper(material)
     gre = _is_gre(material)
     cpvc = _is_cpvc(material)
+    titanium = _is_titanium(material)
     # CPVC (digit 60) — HDG bolting per project §5.5; no Xylan, special
     # text on the nut (extra steel + CPVC washers on both sides).
     if cpvc:
         return {
             "stud":    "ASTM A 193 GR B7, HDG AS PER ASTM A 153, ASME B 1.1",
             "hex_nut": "ASTM A 194 GR 2H, HDG AS PER ASTM A 153, ASME B 18.2.2 WITH 3.2 mm thk Steel & CPVC washer on both sides",
+        }
+    # Titanium (digit 70) — B7M + Xylan, with "to be used with Insulating
+    # gasket" note (electrolytic isolation between Ti flange and CS bolts).
+    if titanium:
+        coating = "XYLAR 2 + XYLAN 1070 coated with minimum combined thickness of 50µm to be used with Insulating gasket"
+        return {
+            "stud":    f"ASTM A 193 Gr. B7M, {coating}",
+            "hex_nut": f"ASTM A 193 Gr. B7M, {coating}",
         }
     # DSS / SDSS (digits 20 + 25) — project rule: ASTM A 453 Gr. 660 for both
     # stud and nut across ALL ratings (with or without NACE). A453 660 is
@@ -312,6 +330,13 @@ def gasket(face: str, material: str, service: Optional[str] = None) -> dict:
         return {
             "type": "Full Face Gasket",
             "spec": "#150 Full face gasket 3 mm thk to ASME B 16.21, PTFE/EPDM",
+        }
+    # Titanium (digit 70) — thin CNAF flat ring per B 16.21 (electrolytic
+    # isolation handled via insulating gasket kit; see bolting note).
+    if _is_titanium(material):
+        return {
+            "type": "Flat Ring Gasket",
+            "spec": "ASME B 16.21, Flat Ring, 1.58 mm, CNAF",
         }
     # Galvanized / epoxy-lined CS classes (A3, A4, B4, D4, A5, A6 etc.) and
     # 90/10 CuNi — low-pressure water/utility — use 3 mm neoprene/EPDM flat
@@ -488,6 +513,17 @@ def _valve_codes(rating: str, material: str, class_code: Optional[str]) -> dict:
     code = _class_base(class_code)
     tail = f"{code}{face_suffix}"
 
+    # Titanium (digit 70) — chemical service. PEEK-seated Ball (no PTFE),
+    # no Gate (Ti gate valves are rare/cost-prohibitive), single-type Check
+    # (Swing only), Needle valve added (chemical sampling / instrument tie).
+    if _is_titanium(material):
+        return {
+            "ball":   f"BLRP{tail}, BLFP{tail}",   # Ball R + F bore, P (PEEK) seat
+            "globe":  f"GLYM{tail}",                # Globe Y screw-yoke, Metal
+            "check":  f"CHSM{tail}",                # Check, Swing only, Metal
+            "needle": f"NEIP{tail}",                # Needle Inline, PEEK seat
+        }
+
     seats = _ball_seat_letters(rn, ltcs)
 
     # Ball — emit Reduced + Full bore for each seat letter
@@ -569,6 +605,9 @@ def valves(rating: str, material: str, class_code: Optional[str] = None) -> dict
             f"Double Block and Bleed, {body} body, Flanged {face}{nace_suffix}")
         result["dbb_inst"] = _row("dbb_inst",
             f"DBB with threaded instrument connections, {body} body, Flanged {face}{nace_suffix}")
+    if "needle" in codes:
+        result["needle"] = _row("needle",
+            f"Needle valve, Inline, PEEK-seated, {body} body, Flanged {face}")
     return result
 
 

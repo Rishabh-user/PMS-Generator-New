@@ -103,11 +103,15 @@ _RULES: list[tuple[re.Pattern, dict]] = [
     }),
     (re.compile(r"(?i)\bTITANIUM\b|\bTi\b|B861"), {
         "family":       "Titanium Gr 2",
-        "pipe":         "ASTM B 861 UNS R50400 (Gr 2)",
-        "fittings":     "ASTM B 363 WPT2",
-        "flange":       "ASTM B 381 F2",
-        "valve_body":   "ASTM B 367 C-2",
-        "branch_outlet":"MSS SP 97 + B 381 F2",
+        # Project §5.5 long-form titanium spec — matches the project PMS
+        # document (A70 sheet). Pipe = B 861 Gr. 2, fittings = B 363 Gr.
+        # WPT 2, flange = B 381 Gr. F 2 (or LJ inner / WN outer combo —
+        # the Datasheet renderer displays the full multi-part MOC).
+        "pipe":         "ASTM B 861 Gr. 2",
+        "fittings":     "ASTM B 363 Gr. WPT 2",
+        "flange":       "ASTM B 381 Gr. F 2",
+        "valve_body":   "ASTM B 367 Gr. C-2",
+        "branch_outlet":"MSS SP 97",
     }),
     # --- Composite / plastic — not in B31.3 Table A-1, manufacturer-specific ---
     (re.compile(r"(?i)\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced"), {

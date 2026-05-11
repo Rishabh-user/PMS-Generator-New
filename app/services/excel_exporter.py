@@ -133,6 +133,8 @@ def _nps_rows(material: Optional[str] = None, service: Optional[str] = None) -> 
             fname = "nps_dimensions_copper.json"
         elif re.search(r"\bCPVC\b", material, re.I):
             fname = "nps_dimensions_cpvc.json"
+        elif re.search(r"\bTITANIUM\b|\bTi\b|B861", material, re.I):
+            fname = "nps_dimensions_titanium.json"
     return _load_json(fname)["rows"]
 
 
@@ -671,7 +673,12 @@ def build_workbook(
         valid = (t_mm < d_over_6) if t_mm is not None else None
         tm = t_mm + C_mm if t_mm is not None else None
         calc_thk = tm / (1 - mill_tol) if tm is not None else None
-        pick = _pick_schedule(sched_table_primary, r["nps_decimal"], calc_thk, sched_table_fallback) if calc_thk is not None else None
+        # Project-mandated override (e.g. Titanium A70) — the NPS dim file
+        # carries explicit `sch` + `wt_mm` per NPS. Use those directly.
+        if r.get("sch") is not None and r.get("wt_mm") is not None:
+            pick = {"sch": str(r["sch"]), "wt_mm": r["wt_mm"], "status": "OK", "fallback": False}
+        else:
+            pick = _pick_schedule(sched_table_primary, r["nps_decimal"], calc_thk, sched_table_fallback) if calc_thk is not None else None
         wt_rows.append({
             "nps": r["nps"], "od_mm": D, "t_mm": t_mm, "d_over_6": d_over_6,
             "validity": "OK" if valid else ("ALERT" if valid is False else None),

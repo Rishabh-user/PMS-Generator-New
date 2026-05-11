@@ -426,6 +426,7 @@ function _npsKey(material, service) {
     if (/CuNi|C70600|B466/i.test(material)) return 'cuni';
     if (/\bCOPPER\b|C12200|\bB42\b/i.test(material)) return 'copper';
     if (/\bCPVC\b/i.test(material)) return 'cpvc';
+    if (/\bTITANIUM\b|\bTi\b|B861/i.test(material)) return 'titanium';
     return 'default';
 }
 
@@ -524,6 +525,23 @@ function _materialUsesStainlessSchedules(material) {
 // the given NPS. Falls back to the heaviest row + status='NOT OK' when
 // nothing qualifies, so the engineer sees the gap rather than '—'.
 function pickSchedule(npsDecimal, calcThkMm, material) {
+    // Project-mandated override: if the active NPS dim file carries
+    // explicit `sch` + `wt_mm` per NPS (e.g. Titanium A70), use those
+    // directly so Tab 3 and Excel View both show the project-spec value
+    // instead of a calc-derived pick.
+    const dims = window._npsDimensions;
+    if (dims && dims.rows) {
+        const row = dims.rows.find(r => r.nps_decimal === npsDecimal);
+        if (row && row.sch != null && row.wt_mm != null) {
+            return {
+                sch_display: String(row.sch),
+                wt_mm:       row.wt_mm,
+                status:      'OK',
+                table:       'project-spec',
+                row,
+            };
+        }
+    }
     const useSs = _materialUsesStainlessSchedules(material);
     if (calcThkMm == null || Number.isNaN(calcThkMm)) return null;
 
@@ -1139,6 +1157,9 @@ function _isGreMat(material) {
 function _isCpvcMat(material) {
     return /\bCPVC\b/i.test(material || '');
 }
+function _isTitaniumMat(material) {
+    return /\bTITANIUM\b|\bTi\b|B861/i.test(material || '');
+}
 function _isBonstrandService(service) {
     return /Hypochlorite|BONSTRAND/i.test(service || '');
 }
@@ -1239,6 +1260,10 @@ function _dsPipeMoc(specs, material, isLarge) {
 //   90/10 CuNi     → SW small bore, BW Welded large bore (per EEMUA 234)
 //   Everything else → BW Seamless small bore, BW Welded large bore
 function _dsConnectionStyle(material, service) {
+    if (_isTitaniumMat(material)) {
+        const txt = 'Butt Weld (SCH to match pipe), Seamless';
+        return { sm_type: txt, lg_type: txt, merge: true };
+    }
     if (_isGreMat(material)) {
         const txt = _isBonstrandService(service)
             ? 'Manufacturer standard (BONSTRAND Series 50000C)'
@@ -1280,9 +1305,31 @@ function _dsComponents(material, fs, service) {
     const isCuNi     = _isCuNiMat(u);
     const isCopper   = _isCopperMat(u);
     const isGre      = _isGreMat(u);
+    const isTi       = _isTitaniumMat(u);
     const fittingMoc = fs.fittings || '—';
     const flangeMoc  = fs.flange || '—';
     const branchMoc  = fs.branch_outlet || '—';
+
+    if (isTi) {
+        // Titanium (digit 70): BW Seamless, single column (small/large
+        // bore not distinguished — Ti pipe per the project is one set).
+        // Component list per project A70 sheet — adds Elbolet, Nipoflange,
+        // Nipple. Elbow row carries the long B 16.9 + B 16.28 reference.
+        return {
+            sm_moc: fittingMoc, lg_moc: fittingMoc, moc_merge: true,
+            rows: [
+                { name: 'Elbow',      sm: 'ASME B 16.9 and ASME B 16.28 for short radius elbow and returns', merge: true },
+                { name: 'Tee',        sm: 'ASME B 16.9',                                    merge: true },
+                { name: 'Red.',       sm: 'ASME B 16.9',                                    merge: true },
+                { name: 'Cap',        sm: 'ASME B 16.9',                                    merge: true },
+                { name: 'Plug',       sm: 'Hex Head Plug, ASME B 16.11',                    merge: true },
+                { name: 'Elbolet',    sm: 'MSS SP 97',                                      merge: true },
+                { name: 'Weldolet',   sm: 'MSS SP 97',                                      merge: true },
+                { name: 'Nipoflange', sm: 'ASTM B 363 Gr. WPT 2 (Ref. Section 1.24)',       merge: true },
+                { name: 'Nipple',     sm: 'ASME B 36.10M, MOC Same as pipe',                merge: true },
+            ],
+        };
+    }
 
     if (isGre) {
         // GRE classes (A50/A51/A52). Fittings have a special row list with
@@ -1395,6 +1442,10 @@ function _dsComponents(material, fs, service) {
 //   Galv CS    → Screwed (SCRD) + WN
 //   Else       → WN both bores
 function _dsFlangeType(material, service) {
+    if (_isTitaniumMat(material)) {
+        return { sm: 'Lap Joint Flange (Note 4) / WN Flange RF',
+                 lg: 'Lap Joint Flange (Note 4) / WN Flange RF', merge: true };
+    }
     if (_isGreMat(material)) {
         const txt = _isBonstrandService(service)
             ? 'Manufacturer standard (BONSTRAND Series 50000C)'
@@ -1422,6 +1473,14 @@ function _dsFlangeType(material, service) {
 // trailing Blind Flange table.
 function _dsFlangeBlock(material, fs, faceFull, service) {
     const flangeMoc = fs.flange || '—';
+    if (_isTitaniumMat(material)) {
+        return {
+            moc:       'LJ=Inner Flange-B 363 WPT2, Outer Flange ASTM A 105N, Epoxy coated and WN= B 381 Gr. F2',
+            std:       'ASME B 16.5, Butt Welding ends as per ASME B 16.25',
+            show_face: false,           // Face info baked into TYPE row ("WN Flange RF")
+            blind_moc: 'ASTM B 381 Gr. F 2 as per ASME B 16.5',
+        };
+    }
     if (_isCpvcMat(material)) {
         return {
             section_title: 'Flange (F 439, Bolt hole as per ASME B 16.5)',
@@ -1690,7 +1749,7 @@ function renderDatasheetTab(state, designPbarg, designTc) {
             <!-- ── P-T Rating ── -->
             <table class="ds-table">
                 <tr class="ds-section-row">
-                    <td colspan="${ptTemps.length + 2}">Pressure-Temperature Rating</td>
+                    <td colspan="${ptTemps.length + 2}">${_isTitaniumMat(state.material) ? 'Pressure-Temperature Rating (EEMUA 234, Table 69)' : 'Pressure-Temperature Rating'}</td>
                 </tr>
                 <tr>
                     <td class="ds-label">Press., barg</td>
@@ -1852,7 +1911,7 @@ function renderDatasheetTab(state, designPbarg, designTc) {
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="2">Spade and Spacer</td></tr>
                 <tr><td class="ds-label">TYPE</td><td class="ds-value">Manufacturer standard, Flat Face (FF)</td></tr>
-            </table>` : ((!_isCopperMat(state.material) && !_isCpvcMat(state.material)) ? `
+            </table>` : ((!_isCopperMat(state.material) && !_isCpvcMat(state.material) && !_isTitaniumMat(state.material)) ? `
             <!-- ── Spectacle Blind / Spacer Blinds (skipped for Copper) ── -->
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="3">Spectacle Blind/Spacer Blinds</td></tr>
@@ -1885,6 +1944,7 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 ${v.butterfly ? `<tr><td class="ds-label">Butterfly</td><td class="ds-value ds-code">${escapeHtml(vCode('butterfly'))}</td></tr>` : ''}
                 ${v.dbb ? `<tr><td class="ds-label">DBB</td><td class="ds-value ds-code">${escapeHtml(vCode('dbb'))}</td></tr>` : ''}
                 ${v.dbb_inst ? `<tr><td class="ds-label">DBB (Inst.)</td><td class="ds-value ds-code">${escapeHtml(vCode('dbb_inst'))}</td></tr>` : ''}
+                ${v.needle ? `<tr><td class="ds-label">Needle</td><td class="ds-value ds-code">${escapeHtml(vCode('needle'))}</td></tr>` : ''}
             </table>`}
 
             <!-- ── Notes ── -->
