@@ -27,6 +27,9 @@ _NPS_OVERRIDES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?i)\bCOPPER\b|C12200|\bB42\b"),  "nps_dimensions_copper.json"),
     (re.compile(r"(?i)\bCPVC\b"),                   "nps_dimensions_cpvc.json"),
     (re.compile(r"(?i)\bTITANIUM\b|\bTi\b|B861"),   "nps_dimensions_titanium.json"),
+    # Tubing materials — SS 316/316L Tubing (digit 80) and 6 MO Tubing
+    # (digit 90). Use 4-NPS instrument-tubing dimensions per ASTM A 269.
+    (re.compile(r"(?i)Tubing|N08367|6\s*MO"),       "nps_dimensions_tubing.json"),
 ]
 
 

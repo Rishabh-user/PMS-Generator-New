@@ -85,7 +85,10 @@ def find(rating: str, material: str) -> Optional[dict]:
     target = _clean_material(material)
 
     for group_id, group in groups.items():
-        materials_norm = {_norm(m) for m in group.get("materials", [])}
+        # Apply the same paren-stripping clean to the JSON material strings
+        # so a JSON entry of 'SS 316 / 316L (Tubing)' matches a user input
+        # of 'SS 316 / 316L (Tubing)' (paren stripped on both sides).
+        materials_norm = {_clean_material(m) for m in group.get("materials", [])}
         if target in materials_norm:
             temps    = list(group.get("temperatures_c", []))
             pressures = list(group.get("pressures_barg", []))
@@ -99,6 +102,9 @@ def find(rating: str, material: str) -> Optional[dict]:
                 "temperatures_c":  temps,
                 "pressures_barg":  pressures,
                 "temp_labels":     labels,
+                # Pass through project-tabulated hydrotest if present
+                # (e.g. tubing classes carry their own value).
+                "hydrotest_barg":  group.get("hydrotest_barg"),
                 "cold_point": (
                     {"pressure_barg": pressures[cold_idx], "temperature_c": temps[cold_idx]}
                     if cold_idx is not None else None

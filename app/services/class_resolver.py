@@ -143,15 +143,27 @@ def derive_suffix(material: str, ca: str) -> str:
     return suffix
 
 
+def _tubing_variant(rating: str) -> str:
+    """Tubing pressure tiers — 'Tubing A' / 'Tubing B' / 'Tubing C' append
+    A / B / C to the class code (e.g. T80A, T80B, T80C). The plain
+    'Tubing' rating still produces T80 / T90 with no trailing variant."""
+    if not rating:
+        return ""
+    m = re.match(r"^\s*Tubing\s+([A-Z])\s*$", rating, re.I)
+    return m.group(1).upper() if m else ""
+
+
 def derive_class_code(rating: str, material: str, ca: str) -> dict:
-    letter = derive_letter(rating)
-    digit  = derive_digit(material, ca)
-    suffix = derive_suffix(material, ca)
+    letter   = derive_letter(rating)
+    digit    = derive_digit(material, ca)
+    suffix   = derive_suffix(material, ca)
+    trailing = _tubing_variant(rating)
     return {
-        "class_code": f"{letter}{digit}{suffix}",
+        "class_code": f"{letter}{digit}{trailing}{suffix}",
         "letter":     letter,
         "digit":      digit,
         "suffix":     suffix,
+        "trailing":   trailing,
     }
 
 

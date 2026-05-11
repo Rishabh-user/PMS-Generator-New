@@ -135,6 +135,8 @@ def _nps_rows(material: Optional[str] = None, service: Optional[str] = None) -> 
             fname = "nps_dimensions_cpvc.json"
         elif re.search(r"\bTITANIUM\b|\bTi\b|B861", material, re.I):
             fname = "nps_dimensions_titanium.json"
+        elif re.search(r"Tubing|N08367|6\s*MO", material, re.I):
+            fname = "nps_dimensions_tubing.json"
     return _load_json(fname)["rows"]
 
 

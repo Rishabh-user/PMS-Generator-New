@@ -110,6 +110,18 @@ def _is_titanium(material: str) -> bool:
     return bool(re.search(r"\bTITANIUM\b|\bTi\b|B861", material, re.I))
 
 
+def _is_tubing(class_code: Optional[str], material: Optional[str] = None) -> bool:
+    """Tubing classes — T80A/B/C (SS 316/316L Tubing, digit 80) and
+    T90A/B/C (6 MO Tubing, digit 90). No flange / bolting / gasket sections;
+    only compression-fitting hardware and instrument valves with JT end
+    connection."""
+    if class_code and re.match(r"^T\d", class_code.strip(), re.I):
+        return True
+    if material and re.search(r"Tubing|N08367|6\s*MO", material, re.I):
+        return True
+    return False
+
+
 def _is_copper(material: str) -> bool:
     """Project digit 40 — pure Copper (UNS C12200). Distinct from CuNi
     (90/10 Cu-Ni alloy, digit 30) — Copper is the bare metal."""
@@ -524,6 +536,19 @@ def _valve_codes(rating: str, material: str, class_code: Optional[str]) -> dict:
             "needle": f"NEIP{tail}",                # Needle Inline, PEEK seat
         }
 
+    # Tubing classes (T80A/B/C, T90A/B/C) — instrument / chemical-injection
+    # service. Compression-fitting hardware. End connection is always JT
+    # (RTJ + NPT female for instrument valves). Four valve types listed:
+    # DBB (Inst), Needle (Inst), Ball (Inst), Check (Inst).
+    if _is_tubing(class_code, material):
+        spec = code  # e.g. T80A — already includes the tubing variant letter
+        return {
+            "dbb_inst": f"DBFP{spec}JT",            # DBB F-bore PEEK + JT
+            "needle":   f"NEIP{spec}JT",            # Needle Inline PEEK + JT
+            "ball":     f"BLFP{spec}JT",            # Ball F-bore PEEK + JT
+            "check":    f"CHPM{spec}JT",            # Check Piston Metal + JT
+        }
+
     seats = _ball_seat_letters(rn, ltcs)
 
     # Ball — emit Reduced + Full bore for each seat letter
@@ -583,7 +608,30 @@ def valves(rating: str, material: str, class_code: Optional[str] = None) -> dict
 
     # CuNi rating uses the EEMUA designation rather than the ASME pound class.
     is_cuni = bool(material) and bool(re.search(r"CuNi|C70600|B466", material, re.I))
-    rating_label = "EEMUA 20 bar, FF" if is_cuni else f"{rating}, {face}"
+    # Tubing classes have no pound-class rating — surface as "—".
+    is_tubing_class = _is_tubing(class_code, material)
+    if is_tubing_class:
+        rating_label = "—"
+    elif is_cuni:
+        rating_label = "EEMUA 20 bar, FF"
+    else:
+        rating_label = f"{rating}, {face}"
+
+    # Tubing classes emit only the four instrument-valve rows (Ball, Check,
+    # DBB, Needle — all "(Inst)"). Skip the generic Gate / Globe / etc. set.
+    if is_tubing_class:
+        return {
+            "rating":   rating_label,
+            "body":     body,
+            "ball":     {"code": codes.get("ball", "—"),
+                         "desc": f"Ball valve (Inst), Full bore, PEEK-seated, body AISI 316, ends per manufacturer std."},
+            "check":    {"code": codes.get("check", "—"),
+                         "desc": f"Check valve (Inst), Piston, Metal-seated, body AISI 316, ends per manufacturer std."},
+            "dbb_inst": {"code": codes.get("dbb_inst", "—"),
+                         "desc": f"DBB (Inst), Full bore, PEEK-seated, body AISI 316, ends per manufacturer std."},
+            "needle":   {"code": codes.get("needle", "—"),
+                         "desc": f"Needle valve (Inst), Inline, PEEK-seated, body AISI 316, ends per manufacturer std."},
+        }
 
     result = {
         "rating":   rating_label,

@@ -9,7 +9,10 @@
     "5000#": "J",
     "10000#": "K",
     "EEMUA 20 bar": "A",
-    "Tubing": "T"
+    "Tubing": "T",
+    "Tubing A": "T",
+    "Tubing B": "T",
+    "Tubing C": "T"
   },
   "material_digits": [
     {

@@ -427,6 +427,7 @@ function _npsKey(material, service) {
     if (/\bCOPPER\b|C12200|\bB42\b/i.test(material)) return 'copper';
     if (/\bCPVC\b/i.test(material)) return 'cpvc';
     if (/\bTITANIUM\b|\bTi\b|B861/i.test(material)) return 'titanium';
+    if (/Tubing|N08367|6\s*MO/i.test(material)) return 'tubing';
     return 'default';
 }
 
@@ -1566,8 +1567,156 @@ function _dsRowsByNps(rows) {
 
 function _dsFmt(v, dp = 1) {
     if (v == null || Number.isNaN(v)) return '—';
-    return Number(v).toFixed(dp);
+    const n = Number(v);
+    // Drop trailing zeros — '125.0' → '125', '14.50' → '14.5'. Keeps the
+    // P-T and pipe-data cells clean when values are integers (tubing) or
+    // single-decimal (most ratings).
+    return n.toFixed(dp).replace(/\.?0+$/, '');
 }
+
+// Tubing detection: class code starts with T followed by a digit (T80A,
+// T90B, etc.), OR material name carries "Tubing" / 6 MO designation.
+function _isTubingClass(classCode) {
+    return /^T\d/i.test((classCode || '').trim());
+}
+function _isTubingMat(material) {
+    return /Tubing|N08367|6\s*MO/i.test(material || '');
+}
+
+
+// Dedicated Datasheet for tubing classes — Pipe Data + Fittings Data +
+// Valves only. No flange / spectacle / mechanical-joints sections.
+function _renderTubingDatasheet(host, state, fs, v, pt) {
+    const ptTemps  = pt.temperatures_c || [];
+    const ptPress  = pt.pressures_barg || [];
+    const ptLabels = pt.temp_labels || ptTemps.map(String);
+
+    // Hydrotest comes from the P-T table when present (project tabulates
+    // per-rating hydrotest); fall back to 1.5× max P if not stored.
+    const groups = pt && pt.group ? null : null;
+    let hydroBarg = pt && pt.hydrotest_barg;
+    if (hydroBarg == null) {
+        hydroBarg = ptPress.length ? Math.max(...ptPress) * 1.5 : 0;
+    }
+
+    const dims = window._npsDimensions;
+    const tubingRows = (dims && dims.rows) || [];
+
+    const sizeRow = tubingRows.map(r => `<td>${_dsFmtNps(r.nps_decimal)}</td>`).join('');
+    const thkRow  = tubingRows.map(r => `<td>${r.wt_mm != null ? r.wt_mm : '—'}</td>`).join('');
+    const ncols   = tubingRows.length;
+
+    const pressCells = ptPress.map(p => `<td>${_dsFmt(p, 1)}</td>`).join('');
+    const tempCells  = ptLabels.map(t => `<td>${escapeHtml(t)}</td>`).join('');
+
+    // Pipe MOC text per material family.
+    let pipeMoc = fs.pipe || '—';
+    if (/6\s*MO/i.test(state.material)) {
+        pipeMoc = 'ASTM A269 (UNS S31254) SML, Annealed, Hardness <= 90 HRB SML';
+    } else if (/316L?/i.test(state.material) && /Tubing/i.test(state.material)) {
+        pipeMoc = 'ASTM A269 Type 316/316L SML, Annealed, Hardness <= 90 HRB SML';
+    }
+
+    const fittingsMoc = 'Compression fitting with double ferrule, body AISI 316, ferrules and nuts in AISI 316';
+    const fittingsEnds = 'OD X THD, OD X OD, & OD X SW (Manufacturer Standard)';
+
+    const vCode = k => (v[k] || {}).code || '—';
+    const cleanMat = (typeof cleanMaterial === 'function') ? cleanMaterial(state.material) : state.material;
+    const displayedCode = _dsEffectiveClassCode(state) || state.classCode || '—';
+
+    host.innerHTML = `
+        <div class="ds-sheet">
+            <!-- ── Header ── -->
+            <table class="ds-table ds-header-tbl">
+                <tr>
+                    <td class="ds-header-title" colspan="5">PIPING MATERIAL SPECIFICATION</td>
+                    <td class="ds-rev-lbl">Rev :</td>
+                    <td class="ds-rev-val">A0</td>
+                </tr>
+                <tr class="ds-header-row">
+                    <td class="ds-header-cell"></td>
+                    <td class="ds-header-cell">Piping Class</td>
+                    <td class="ds-header-cell">Material</td>
+                    <td class="ds-header-cell">C.A</td>
+                    <td class="ds-header-cell">Mill Tol</td>
+                    <td class="ds-header-cell" colspan="2">Sheet No.</td>
+                </tr>
+                <tr>
+                    <td class="ds-class-badge"></td>
+                    <td class="ds-id-value"><strong>${escapeHtml(displayedCode)}</strong></td>
+                    <td class="ds-id-value">—</td>
+                    <td class="ds-id-value">${escapeHtml(cleanMat || '—')}</td>
+                    <td class="ds-id-value">${escapeHtml(state.ca || '—')}</td>
+                    <td class="ds-id-value">0.0%</td>
+                    <td class="ds-id-value">${escapeHtml(displayedCode)}</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Design Code:</td>
+                    <td colspan="6" class="ds-value">—</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Service:</td>
+                    <td colspan="6" class="ds-value">${escapeHtml(state.service || '—')}</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Branch Chart:</td>
+                    <td colspan="6" class="ds-value">—</td>
+                </tr>
+            </table>
+
+            <!-- ── P-T Rating ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row">
+                    <td colspan="${ptTemps.length + 2}">Pressure-Temperature Rating</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Press., barg</td>
+                    ${pressCells}
+                    <td class="ds-merge-r" rowspan="2">Hydrotest Pr. (barg)</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Temp., °C</td>
+                    ${tempCells}
+                </tr>
+                <tr>
+                    <td class="ds-label" colspan="${ptTemps.length + 1}"></td>
+                    <td class="ds-id-value"><strong>${_dsFmt(hydroBarg, 1)}</strong></td>
+                </tr>
+            </table>
+
+            <!-- ── Pipe Data ── -->
+            <table class="ds-table ds-pipe-tbl">
+                <tr class="ds-section-row"><td colspan="${ncols + 1}">Pipe Data</td></tr>
+                <tr><td class="ds-label">Code</td><td colspan="${ncols}" class="ds-value">ASTM A 269</td></tr>
+                <tr><td class="ds-label">Size (in)</td>${sizeRow}</tr>
+                <tr><td class="ds-label">Sch. (Thk)</td>${thkRow}</tr>
+                <tr><td class="ds-label">MOC</td><td colspan="${ncols}" class="ds-value">${escapeHtml(pipeMoc)}</td></tr>
+                <tr><td class="ds-label">Ends</td><td colspan="${ncols}" class="ds-value">PE</td></tr>
+                <tr><td class="ds-label">Fittings</td><td colspan="${ncols}" class="ds-value">According to manufacturer standard</td></tr>
+            </table>
+
+            <!-- ── Fittings Data (compression fitting sub-section) ── -->
+            <table class="ds-table ds-pipe-tbl">
+                <tr class="ds-section-row"><td colspan="${ncols + 1}">Fittings Data</td></tr>
+                <tr><td class="ds-label">Size (in)</td>${sizeRow}</tr>
+                <tr><td class="ds-label">TYPE</td><td colspan="${ncols}" class="ds-value">Compression Fitting</td></tr>
+                <tr><td class="ds-label">MOC</td><td colspan="${ncols}" class="ds-value">${escapeHtml(fittingsMoc)}</td></tr>
+                <tr><td class="ds-label">Ends</td><td colspan="${ncols}" class="ds-value">${escapeHtml(fittingsEnds)}</td></tr>
+            </table>
+
+            <!-- ── Valves ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row"><td colspan="2">Valves</td></tr>
+                <tr><td class="ds-label">Rating</td><td class="ds-value">${escapeHtml(v.rating || '—')}</td></tr>
+                <tr><td class="ds-label">DBB (Inst)</td><td class="ds-value ds-code">${escapeHtml(vCode('dbb_inst'))}</td></tr>
+                <tr><td class="ds-label">Needle (Inst)</td><td class="ds-value ds-code">${escapeHtml(vCode('needle'))}</td></tr>
+                <tr><td class="ds-label">Ball (Inst)</td><td class="ds-value ds-code">${escapeHtml(vCode('ball'))}</td></tr>
+                <tr><td class="ds-label">Check (Inst)</td><td class="ds-value ds-code">${escapeHtml(vCode('check'))}</td></tr>
+            </table>
+        </div>
+    `;
+}
+
 
 function renderDatasheetTab(state, designPbarg, designTc) {
     const host = document.getElementById('rDatasheet');
@@ -1577,6 +1726,13 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const fx = cf.flange_extras || {};
     const v  = fx.valves || {};
     const pt = state.pt || {};
+
+    // Tubing classes (T80A/B/C, T90A/B/C) have a fundamentally different
+    // datasheet shape — no flange / blind flange / spectacle / bolts.
+    // Route to a dedicated tubing renderer.
+    if (_isTubingClass(state.classCode) || _isTubingMat(state.material)) {
+        return _renderTubingDatasheet(host, state, fs, v, pt);
+    }
 
     // P-T envelope rows for header table
     const ptTemps = pt.temperatures_c || [];

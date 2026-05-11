@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "source": "Project §5.5 — Instrument / chemical-injection tubing (ASTM A 269)",
+    "applies_to": "Tubing classes T80A/B/C (SS 316/316L) and T90A/B/C (6 MO)",
+    "note": "Sized by outside diameter (tubing OD = nominal inches × 25.4 mm). Sch column carries the actual wall thickness in mm; no B36.10M schedule applies."
+  },
+  "rows": [
+    { "nps": "0.5",  "nps_decimal": 0.5,  "od_mm": 12.70, "sch": "1.245", "wt_mm": 1.245 },
+    { "nps": "0.75", "nps_decimal": 0.75, "od_mm": 19.05, "sch": "1.651", "wt_mm": 1.651 },
+    { "nps": "1",    "nps_decimal": 1.0,  "od_mm": 25.40, "sch": "2.413", "wt_mm": 2.413 },
+    { "nps": "1.5",  "nps_decimal": 1.5,  "od_mm": 38.10, "sch": "3.404", "wt_mm": 3.404 }
+  ]
+}
