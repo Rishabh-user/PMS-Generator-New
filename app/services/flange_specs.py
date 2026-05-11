@@ -95,18 +95,25 @@ def _is_soft_gasket_material(material: str) -> bool:
         return True
     if "INTERNALLY COATED" in u:
         return True
+    # 90/10 CuNi (digit 30) — water / utility service per EEMUA 234, uses
+    # the same neoprene/EPDM rubber flat ring on the Flat-Face flange.
+    if "CUNI" in u or "C70600" in u or "B466" in u:
+        return True
     return False
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Face type — ASME B16.5
+# Face type — ASME B16.5 (+ EEMUA 234 for CuNi)
 # ──────────────────────────────────────────────────────────────────────
 # Practice (project §5.5):
-#   150 - 600#         → RF (Raised Face)
-#   900# / 1500# / 2500# → RTJ (Ring-Type Joint) for sealing reliability
-#                          — applies to all materials, NACE or not.
-#   EEMUA / Tubing     → RF (project default for CuNi / non-flanged tubing)
+#   90/10 CuNi (digit 30) → FF (Flat Face) per EEMUA 234 — flat face
+#                            allows soft rubber gaskets on copper alloy.
+#   150 - 600#            → RF (Raised Face)
+#   900# / 1500# / 2500#  → RTJ (Ring-Type Joint) for sealing reliability.
 def face_type(rating: str, material: str) -> dict:
+    # CuNi material uses Flat Face per EEMUA 234, regardless of rating.
+    if material and re.search(r"CuNi|C70600|B466", material, re.I):
+        return {"code": "FF", "label": "Flat Face"}
     rn = _rating_num(rating)
     if rn is None or rn <= 600:
         return {"code": "RF", "label": "Raised Face"}
@@ -128,6 +135,7 @@ def bolting(material: str) -> dict:
     ltcs = _is_ltcs(material)
     ss316l = _is_ss316l(material)
     duplex = _is_duplex_family(material)
+    cuni = bool(material) and bool(re.search(r"CuNi|C70600|B466", material, re.I))
     # DSS / SDSS (digits 20 + 25) — project rule: ASTM A 453 Gr. 660 for both
     # stud and nut across ALL ratings (with or without NACE). A453 660 is
     # precipitation-hardened austenitic and corrosion-resistant on its own,
@@ -136,6 +144,14 @@ def bolting(material: str) -> dict:
         return {
             "stud":    "ASTM A 453 Gr. 660",
             "hex_nut": "ASTM A 453 Gr. 660",
+        }
+    # 90/10 CuNi (digit 30) — project rule: hardness-controlled NACE-grade
+    # bolting (B7M / 2HM) for general corrosion / seawater service.
+    if cuni:
+        stud, nut = "ASTM A 193 Gr. B7M", "ASTM A 194 Gr. 2HM"
+        return {
+            "stud":    f"{stud}, {_BOLT_COATING}",
+            "hex_nut": f"{nut}, {_BOLT_COATING}",
         }
     # SS316L (digit 10) — project rule: A320 L7M / A194 7M for ALL ratings,
     # NACE or not. Low-temp-capable + hardness-controlled for sour service.
@@ -373,7 +389,14 @@ def _valve_codes(rating: str, material: str, class_code: Optional[str]) -> dict:
     nace = _is_nace(material)
     ltcs = _is_ltcs(material)
     face_code = face_type(rating, material)["code"]
-    face_suffix = "R" if face_code == "RF" else "J"
+    # End-connection letter per VDS code structure:
+    #   R = Raised Face, J = RTJ, F = Flat Face (CuNi / EEMUA 234)
+    if face_code == "FF":
+        face_suffix = "F"
+    elif face_code == "RTJ":
+        face_suffix = "J"
+    else:
+        face_suffix = "R"
 
     code = _class_base(class_code)
     tail = f"{code}{face_suffix}"
@@ -394,11 +417,15 @@ def _valve_codes(rating: str, material: str, class_code: Optional[str]) -> dict:
     }
 
     # Butterfly — non-NACE only (project note 7 restricts wafer to water duty).
-    #   150# / 300#: Wafer-PTFE (BFWT) + Triple-Offset-PEEK (BFTP)
-    #   600#:        Triple-Offset-PEEK only
-    #   900#+:       None — pressure-class uses ball/gate for sealing reliability
+    #   90/10 CuNi (digit 30): Wafer-PTFE only (BFWT) — water service.
+    #   150# / 300# CS / SS:    Wafer-PTFE (BFWT) + Triple-Offset-PEEK (BFTP)
+    #   600#:                   Triple-Offset-PEEK only
+    #   900#+:                  None — pressure-class uses ball/gate.
     if not nace:
-        if rn and rn <= 300:
+        is_cuni = bool(material) and bool(re.search(r"CuNi|C70600|B466", material, re.I))
+        if is_cuni and rn and rn <= 300:
+            codes["butterfly"] = f"BFWT{tail}"
+        elif rn and rn <= 300:
             codes["butterfly"] = f"BFWT{tail}, BFTP{tail}"
         elif rn == 600:
             codes["butterfly"] = f"BFTP{tail}"
@@ -430,8 +457,12 @@ def valves(rating: str, material: str, class_code: Optional[str] = None) -> dict
     def _row(code_key: str, desc: str) -> dict:
         return {"code": codes.get(code_key, "—"), "desc": desc}
 
+    # CuNi rating uses the EEMUA designation rather than the ASME pound class.
+    is_cuni = bool(material) and bool(re.search(r"CuNi|C70600|B466", material, re.I))
+    rating_label = "EEMUA 20 bar, FF" if is_cuni else f"{rating}, {face}"
+
     result = {
-        "rating":   f"{rating}, {face}",
+        "rating":   rating_label,
         "body":     body,
         "ball":     _row("ball",
             f"Reduced bore (0.5\"–2\"); Reduced and Full bore (2.5\"–24\"), {seat}, {body} body, Flanged {face}{nace_suffix}"),

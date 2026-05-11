@@ -85,7 +85,9 @@ _RULES: list[tuple[re.Pattern, dict]] = [
     # --- Non-ferrous ---
     (re.compile(r"(?i)\bCuNi\b|C70600|B466"), {
         "family":       "90/10 CuNi",
-        "pipe":         "ASTM B 466 UNS C70600",
+        # Project §5.5 long-form CuNi pipe spec — covers EEMUA 234, ASTM,
+        # and BS designations so the procurement spec is unambiguous.
+        "pipe":         "Annealed tube 90-10 CU-NI ALLOY UNS 7060X EEMUA 234 20 BAR / ASTM B 466 Copper Alloy UNS No. 70600 / BS 2871 CN 102",
         "fittings":     "ASTM B 466 / B 467 UNS C70600",
         "flange":       "ASTM B 151 UNS C70600",
         "valve_body":   "ASTM B 369 UNS C96200 (Ni Al Bronze)",

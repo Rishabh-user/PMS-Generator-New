@@ -117,9 +117,13 @@ def _load_json(name: str) -> dict:
     return json.loads((settings.data_dir / name).read_text(encoding="utf-8"))
 
 
-# NPS list — same 22-row list shown in the UI (project-supplied subset).
-def _nps_rows() -> list[dict]:
-    return _load_json("nps_dimensions.json")["rows"]
+# NPS list — material-aware. Most classes share the ASME B36.10M OD series;
+# CuNi follows EEMUA 144 with different ODs ≤4" so it has its own file.
+def _nps_rows(material: Optional[str] = None) -> list[dict]:
+    fname = "nps_dimensions.json"
+    if material and re.search(r"CuNi|C70600|B466", material, re.I):
+        fname = "nps_dimensions_cuni.json"
+    return _load_json(fname)["rows"]
 
 
 def _b3610_rows() -> dict[float, list[dict]]:
@@ -628,7 +632,7 @@ def build_workbook(
     mill_tol = 0.125
 
     # ---- Wall thickness rows ---------------------------------------------
-    nps_list = _nps_rows()
+    nps_list = _nps_rows(material)
     b3610 = _b3610_rows()
     use_ss = _uses_stainless(material)
     b3619 = _b3619_rows() if use_ss else {}

@@ -3,7 +3,9 @@
 The four files are the single source of truth for the Step 1 form. Editing a
 JSON file and refreshing the browser is enough — no code changes needed."""
 import json
+import re
 from functools import lru_cache
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
@@ -11,6 +13,26 @@ from app.config import settings
 
 
 router = APIRouter(prefix="/api", tags=["options"])
+
+
+# ---------------------------------------------------------------------------
+# Per-material NPS dimension overrides
+# ---------------------------------------------------------------------------
+# Most materials follow ASME B36.10M OD values (in `nps_dimensions.json`).
+# A few — notably 90/10 CuNi — follow EEMUA 144 with different ODs at small
+# bores. Add a new override here when another material family diverges.
+_NPS_OVERRIDES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"(?i)\bCuNi\b|C70600|B466"), "nps_dimensions_cuni.json"),
+]
+
+
+def _resolve_nps_file(material: Optional[str]) -> str:
+    if not material:
+        return "nps_dimensions.json"
+    for pat, fname in _NPS_OVERRIDES:
+        if pat.search(material):
+            return fname
+    return "nps_dimensions.json"
 
 
 @lru_cache(maxsize=8)
@@ -55,10 +77,12 @@ def all_options() -> dict:
 
 
 @router.get("/nps-dimensions")
-def nps_dimensions() -> dict:
+def nps_dimensions(material: Optional[str] = None) -> dict:
     """NPS → OD (mm) lookup used by the Wall Thickness Calculation Table.
-    Same list for every PMS class — fetched once on report load."""
-    return _load("nps_dimensions.json")
+    Material-aware: most classes share the ASME B36.10M list, but a few
+    (e.g. CuNi → EEMUA 144) override with their own OD series. Callers
+    that don't pass a material get the default B36.10M list."""
+    return _load(_resolve_nps_file(material))
 
 
 @router.get("/pipe-dimensions")

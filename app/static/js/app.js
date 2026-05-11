@@ -15,7 +15,7 @@ const API = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     }),
-    npsDimensions:    () => fetch('/api/nps-dimensions'),
+    npsDimensions:    (material) => fetch('/api/nps-dimensions' + (material ? `?material=${encodeURIComponent(material)}` : '')),
     pipeDimensions:   () => fetch('/api/pipe-dimensions'),
     pipeDimensionsSs: () => fetch('/api/pipe-dimensions-ss'),
 };
@@ -400,12 +400,27 @@ function populatePtTable(state, designTc) {
 // cached on window._npsDimensions). For now only the NPS and D columns
 // carry data; the rest show '—' until the per-NPS calc is wired.
 // ---------------------------------------------------------------------------
-async function ensureNpsDimensions() {
-    if (window._npsDimensions) return window._npsDimensions;
+// Material-family key — drives per-material caching of NPS dimensions.
+// CuNi (UNS C70600 / EEMUA 144) has different ODs at small bores than the
+// generic ASME B36.10M list; everyone else falls back to "default".
+function _npsKey(material) {
+    if (!material) return 'default';
+    if (/CuNi|C70600|B466/i.test(material)) return 'cuni';
+    return 'default';
+}
+
+async function ensureNpsDimensions(material) {
+    const key = _npsKey(material);
+    window._npsDimsByKey = window._npsDimsByKey || {};
+    if (window._npsDimsByKey[key]) {
+        window._npsDimensions = window._npsDimsByKey[key];
+        return window._npsDimensions;
+    }
     try {
-        const res = await API.npsDimensions();
+        const res = await API.npsDimensions(material);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
+        window._npsDimsByKey[key] = data;
         window._npsDimensions = data;
         return data;
     } catch (e) {
@@ -1094,10 +1109,30 @@ function _dsMillTol() { return '12.5%'; }
 
 function _dsPipeType(material) {
     const u = (material || '').toUpperCase();
+    if (/CUNI|C70600|B466/.test(u)) {
+        // CuNi (EEMUA 234): annealed seamless tube small-bore, seam-welded
+        // large-bore; ends are Plain Ends small-bore + Bevel Ends large-bore.
+        return { sml: 'Seamless', lrg: 'Seam Welded' };
+    }
     if (u.includes('SS') || u.includes('TP3') || u.includes('DSS') || u.includes('SDSS')) {
         return { sml: 'Seamless', lrg: 'Welded, 100% RT' };
     }
     return { sml: 'Seamless', lrg: 'LSAW, 100% RT' };
+}
+
+// Pipe end preparation by material. CuNi gets PE (Plain Ends) small bore
+// + Bevel Ends large bore; everyone else is bevelled both bores.
+function _dsPipeEnds(material) {
+    if (/CUNI|C70600|B466/i.test(material || '')) {
+        return { sml: 'PE', lrg: 'Bevel Ends' };
+    }
+    return { sml: 'BE', lrg: 'BE' };
+}
+
+// Whether to merge the pipe-MOC row across both bore columns. CuNi uses a
+// single comprehensive spec covering both ends, so we merge it visually.
+function _dsPipeMocMerge(material) {
+    return /CUNI|C70600|B466/i.test(material || '');
 }
 
 function _dsPipeMoc(specs, material, isLarge) {
@@ -1113,11 +1148,19 @@ function _dsPipeMoc(specs, material, isLarge) {
 }
 
 
-// Connection style by material — galvanized CS uses Screwed (SCRD) for
-// small bore (water/utility duty), butt-weld for large bore. Everyone
-// else uses butt-weld both bores (seamless small / welded large).
+// Connection style by material:
+//   Galvanised CS  → Screwed (SCRD) #3000 small bore, BW large bore
+//   90/10 CuNi     → SW small bore, BW Welded large bore (per EEMUA 234)
+//   Everything else → BW Seamless small bore, BW Welded large bore
 function _dsConnectionStyle(material) {
-    if (/GALV/i.test(material || '')) {
+    const u = (material || '').toUpperCase();
+    if (/CUNI|C70600|B466/.test(u)) {
+        return {
+            sm_type: 'SW',
+            lg_type: 'BW, Welded',
+        };
+    }
+    if (u.includes('GALV')) {
         return {
             sm_type: 'Screwed (SCRD), #3000',
             lg_type: 'Butt Weld (SCH to match pipe), Seamless',
@@ -1135,16 +1178,41 @@ function _dsConnectionStyle(material) {
 // MOC strings come straight from fitting_specs so adding a new material
 // family in that file flows through automatically.
 function _dsComponents(material, fs) {
-    const isGalv     = /GALV/i.test(material || '');
+    const u          = (material || '').toUpperCase();
+    const isGalv     = /GALV/.test(u);
+    const isCuNi     = /CUNI|C70600|B466/.test(u);
     const fittingMoc = fs.fittings || '—';
     const flangeMoc  = fs.flange || '—';
     const branchMoc  = fs.branch_outlet || '—';
-    const pipeMoc    = fs.pipe || '—';
+
+    if (isCuNi) {
+        // CuNi (90/10) — per EEMUA 234 for every fitting. Same MOC text in
+        // both bore columns (merged in the renderer); Nipple/Swage use the
+        // pipe MOC. `merge: true` spans the cell across both bores.
+        return {
+            sm_moc: '90-10 Cu-Ni',
+            lg_moc: '90-10 Cu-Ni',
+            moc_merge: true,
+            rows: [
+                { name: 'Elbow',    sm: 'EEMUA 234', lg: 'EEMUA 234' },
+                { name: 'Tee',      sm: 'EEMUA 234', lg: 'EEMUA 234' },
+                { name: 'Red.',     sm: 'EEMUA 234', lg: 'EEMUA 234' },
+                { name: 'Cap',      sm: 'EEMUA 234', lg: 'EEMUA 234' },
+                { name: 'Coupl.',   sm: 'EEMUA 234', lg: '' },
+                { name: 'Plug',     sm: 'EEMUA 234', lg: 'EEMUA 234' },
+                { name: 'Union',    sm: 'EEMUA 234', lg: 'EEMUA 234' },
+                { name: 'Sockolet', sm: 'EEMUA 234', lg: '' },
+                { name: 'Weldolet', sm: 'EEMUA 234', lg: 'EEMUA 234' },
+                { name: 'Nipple',   sm: 'EEMUA 234, MOC same as pipe', merge: true },
+                { name: 'Swage',    sm: 'EEMUA 234, MOC same as pipe', merge: true },
+            ],
+        };
+    }
 
     if (isGalv) {
         return {
-            sm_moc: flangeMoc,                                  // forged + galv from fitting_specs
-            lg_moc: fittingMoc,                                  // wrought butt-weld + galv
+            sm_moc: flangeMoc,
+            lg_moc: fittingMoc,
             rows: [
                 { name: 'Elbow',        sm: 'ASME B 16.11', lg: 'ASME B 16.9' },
                 { name: 'Tee',          sm: 'ASME B 16.11', lg: 'ASME B 16.9' },
@@ -1154,7 +1222,7 @@ function _dsComponents(material, fs) {
                 { name: 'Hex Hd. Plug', sm: 'Hex Head Plug, ASME B 16.11', lg: '' },
                 { name: 'Union',        sm: 'ASME B 16.11', lg: 'BS 3799' },
                 { name: 'Olet',         sm: 'MSS SP-97',    lg: branchMoc },
-                { name: 'Swage',        sm: `MSS SP-95, MOC same as pipe`, lg: '' },
+                { name: 'Swage',        sm: `MSS SP-95, MOC same as pipe`, merge: true },
             ],
         };
     }
@@ -1173,12 +1241,42 @@ function _dsComponents(material, fs) {
 }
 
 
-// Flange TYPE — split for galv (Screwed SCRD + WN), single (WN) otherwise.
+// Flange TYPE per material:
+//   90/10 CuNi → SW Flange (small bore) + WN Flange (large bore)
+//   Galv CS    → Screwed (SCRD) + WN
+//   Else       → WN both bores
 function _dsFlangeType(material) {
-    if (/GALV/i.test(material || '')) {
+    const u = (material || '').toUpperCase();
+    if (/CUNI|C70600|B466/.test(u)) {
+        return { sm: 'SW Flange', lg: 'WN Flange' };
+    }
+    if (u.includes('GALV')) {
         return { sm: 'Screwed (SCRD)', lg: 'WN' };
     }
     return { sm: 'WN', lg: 'WN' };
+}
+
+// Flange "shape" — most classes render MOC + FACE + STD (ASME B 16.5).
+// CuNi replaces FACE with a single STD line (EEMUA 234 20 BAR) and the
+// MOC is the short '90-10Cu-Ni' label. Also adds a separate Blind Flange
+// section beneath the main Flange one.
+function _dsFlangeBlock(material, fs, faceFull) {
+    const flangeMoc = fs.flange || '—';
+    if (/CUNI|C70600|B466/i.test(material || '')) {
+        return {
+            moc:      '90-10Cu-Ni',
+            std:      'EEMUA 234 20 BAR',
+            show_face: false,
+            blind_moc: 'ASTM A 105N FF with 3mm 90-10 CuNi weld deposit',
+        };
+    }
+    return {
+        moc:      flangeMoc,
+        std:      'ASME B 16.5',
+        show_face: true,
+        face:     faceFull,
+        blind_moc: null,
+    };
 }
 
 function _dsPickSch(rows, lo, hi) {
@@ -1236,7 +1334,9 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const smallSch = _dsPickSch(wtRows, 0, 2) || '—';
     const largeSch = _dsPickSch(wtRows, 2.5, 80) || '—';
 
-    const pipeType = _dsPipeType(state.material);
+    const pipeType  = _dsPipeType(state.material);
+    const pipeEnds  = _dsPipeEnds(state.material);
+    const mergePipeMoc = _dsPipeMocMerge(state.material);
     const pipeMocSm = _dsPipeMoc(fs, state.material, false);
     const pipeMocLg = _dsPipeMoc(fs, state.material, true);
 
@@ -1271,12 +1371,15 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const typeRow = `
         <td colspan="${smallCols}">${escapeHtml(pipeType.sml)}</td>
         <td colspan="${largeCols}">${escapeHtml(pipeType.lrg)}</td>`;
-    const mocRow = `
-        <td colspan="${smallCols}">${escapeHtml(pipeMocSm)}</td>
-        <td colspan="${largeCols}">${escapeHtml(pipeMocLg)}</td>`;
+    // CuNi pipe spec covers both bores in one line — merge the MOC cell.
+    const mocRow = mergePipeMoc
+        ? `<td colspan="${smallCols + largeCols}">${escapeHtml(pipeMocSm)}</td>`
+        : `
+            <td colspan="${smallCols}">${escapeHtml(pipeMocSm)}</td>
+            <td colspan="${largeCols}">${escapeHtml(pipeMocLg)}</td>`;
     const endsRow = `
-        <td colspan="${smallCols}">BE</td>
-        <td colspan="${largeCols}">BE</td>`;
+        <td colspan="${smallCols}">${escapeHtml(pipeEnds.sml)}</td>
+        <td colspan="${largeCols}">${escapeHtml(pipeEnds.lrg)}</td>`;
 
     // P-T rating header (3 rows: title, press, temp + hydrotest column)
     const ptHeaderCells = ptTemps.map(() => '').join('');
@@ -1304,6 +1407,7 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const faceCode   = (fx.face || {}).code || '';
     const faceFull   = `${ratingNum} ${faceCode}, Serrated Finish`;
     const flangeTypeSplit = _dsFlangeType(state.material);
+    const flangeBlock = _dsFlangeBlock(state.material, fs, faceFull);
 
     // Fittings — material-aware columns + standards
     const connStyle  = _dsConnectionStyle(state.material);
@@ -1413,16 +1517,24 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 </tr>
                 <tr>
                     <td class="ds-label">MOC</td>
-                    <td class="ds-value"><strong>${escapeHtml(components.sm_moc)}</strong></td>
-                    <td class="ds-value"><strong>${escapeHtml(components.lg_moc)}</strong></td>
+                    ${components.moc_merge
+                        ? `<td colspan="2" class="ds-value"><strong>${escapeHtml(components.sm_moc)}</strong></td>`
+                        : `<td class="ds-value"><strong>${escapeHtml(components.sm_moc)}</strong></td>
+                           <td class="ds-value"><strong>${escapeHtml(components.lg_moc)}</strong></td>`}
                 </tr>
-                ${components.rows.map(row => `
-                    <tr>
+                ${components.rows.map(row => {
+                    if (row.merge) {
+                        return `<tr>
+                            <td class="ds-label">${escapeHtml(row.name)}</td>
+                            <td colspan="2" class="ds-value">${escapeHtml(row.sm || '—')}</td>
+                        </tr>`;
+                    }
+                    return `<tr>
                         <td class="ds-label">${escapeHtml(row.name)}</td>
                         <td class="ds-value">${row.sm ? escapeHtml(row.sm) : '—'}</td>
                         <td class="ds-value">${row.lg ? escapeHtml(row.lg) : '—'}</td>
-                    </tr>
-                `).join('')}
+                    </tr>`;
+                }).join('')}
             </table>
 
             <!-- ── Flange ── -->
@@ -1433,10 +1545,19 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                     <td class="ds-value">${escapeHtml(flangeTypeSplit.sm)}</td>
                     <td class="ds-value">${escapeHtml(flangeTypeSplit.lg)}</td>
                 </tr>
-                <tr><td class="ds-label">MOC</td><td colspan="2" class="ds-value"><strong>${escapeHtml(flangeMoc)}</strong></td></tr>
-                <tr><td class="ds-label">FACE</td><td colspan="2" class="ds-value">${escapeHtml(faceFull)}</td></tr>
-                <tr><td class="ds-label">STD</td><td colspan="2" class="ds-value">ASME B 16.5</td></tr>
+                <tr><td class="ds-label">MOC</td><td colspan="2" class="ds-value"><strong>${escapeHtml(flangeBlock.moc)}</strong></td></tr>
+                ${flangeBlock.show_face
+                    ? `<tr><td class="ds-label">FACE</td><td colspan="2" class="ds-value">${escapeHtml(flangeBlock.face)}</td></tr>`
+                    : ''}
+                <tr><td class="ds-label">STD</td><td colspan="2" class="ds-value">${escapeHtml(flangeBlock.std)}</td></tr>
             </table>
+
+            ${flangeBlock.blind_moc ? `
+            <!-- ── Blind Flange (CuNi only) ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row"><td colspan="2">Blind Flange</td></tr>
+                <tr><td class="ds-label">MOC</td><td class="ds-value">${escapeHtml(flangeBlock.blind_moc)}</td></tr>
+            </table>` : ''}
 
             <!-- ── Spectacle Blind / Spacer Blinds ── -->
             <table class="ds-table">
@@ -2141,7 +2262,7 @@ function showReport(state) {
     // so re-render both once data lands. Subsequent refreshes (driven
     // by input edits) will hit the cache and work first try.
     Promise.all([
-        ensureNpsDimensions(),
+        ensureNpsDimensions(state.material),
         ensurePipeDimensions(),
         ensurePipeDimensionsSs(),
     ]).then(() => {
