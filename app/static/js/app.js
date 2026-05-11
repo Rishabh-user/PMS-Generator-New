@@ -1033,6 +1033,345 @@ function renderTab5Components(state) {
     renderValvesCard(state);
 }
 
+
+// ---------------------------------------------------------------------------
+// Tab 6 — Datasheet (Excel-style single-page view)
+//
+// Mirrors the layout of the project's PMS Excel deliverable (PMS-F.pdf):
+// header bar, P-T envelope, pipe data split into small/large bore,
+// fittings/flange/spectacle/bolts/valves/notes. All data sourced from the
+// already-resolved `state` — no extra API calls.
+// ---------------------------------------------------------------------------
+
+const DS_NPS_AXIS = [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32];
+
+function _dsFmtNps(n) {
+    if (n === 0.5)  return '0.5';
+    if (n === 0.75) return '0.75';
+    if (n === 1.5)  return '1.5';
+    return String(n);
+}
+
+function _dsRevisionTag() { return 'A0'; }
+function _dsSheetNo(state) {
+    // Sheet number is project-managed; surface the class code as a stand-in.
+    return state.classCode || '—';
+}
+
+function _dsDesignCode(state) {
+    const isNace = /NACE/i.test(state.material || '');
+    return isNace
+        ? 'ASME B 31.3, NACE-MR-01-75 / ISO-15156-1/2/3'
+        : 'ASME B 31.3';
+}
+
+function _dsMillTol() { return '12.5%'; }
+
+function _dsPipeType(material) {
+    const u = (material || '').toUpperCase();
+    if (u.includes('SS') || u.includes('TP3') || u.includes('DSS') || u.includes('SDSS')) {
+        return { sml: 'Seamless', lrg: 'Welded, 100% RT' };
+    }
+    return { sml: 'Seamless', lrg: 'LSAW, 100% RT' };
+}
+
+function _dsPipeMoc(specs, material, isLarge) {
+    if (!specs) return '—';
+    // 150# CS LSAW project convention pairs A106 Gr B (seamless) with
+    // API 5L Gr B (large-bore welded). For other families, the pipe field
+    // already lists the combined spec.
+    const u = (material || '').toUpperCase();
+    if (isLarge && /\bCS\b/.test(u) && !u.includes('GALV')) {
+        return 'API 5L Gr. B';
+    }
+    return specs.pipe || '—';
+}
+
+function _dsPickSch(rows, lo, hi) {
+    const counts = {};
+    for (const r of rows) {
+        const npsNum = parseFloat(r.nps);
+        if (!r.sch || Number.isNaN(npsNum)) continue;
+        if (npsNum >= lo && npsNum <= hi) {
+            counts[r.sch] = (counts[r.sch] || 0) + 1;
+        }
+    }
+    let best = null, bestCount = 0;
+    for (const [s, c] of Object.entries(counts)) {
+        if (c > bestCount) { bestCount = c; best = s; }
+    }
+    return best;
+}
+
+function _dsRowsByNps(rows) {
+    const map = {};
+    for (const r of rows) {
+        const k = parseFloat(r.nps);
+        if (!Number.isNaN(k)) map[k] = r;
+    }
+    return map;
+}
+
+function _dsFmt(v, dp = 1) {
+    if (v == null || Number.isNaN(v)) return '—';
+    return Number(v).toFixed(dp);
+}
+
+function renderDatasheetTab(state, designPbarg, designTc) {
+    const host = document.getElementById('rDatasheet');
+    if (!host) return;
+    const cf = state.codeFactors || {};
+    const fs = cf.fitting_specs || {};
+    const fx = cf.flange_extras || {};
+    const v  = fx.valves || {};
+    const pt = state.pt || {};
+
+    // P-T envelope rows for header table
+    const ptTemps = pt.temperatures_c || [];
+    const ptPress = pt.pressures_barg || [];
+    const ptLabels = pt.temp_labels || ptTemps.map(String);
+    const hydroBarg = ptPress.length ? Math.max(...ptPress) * 1.5 : (designPbarg || 0) * 1.5;
+
+    // Pipe data — use the same WT table the Schedule tab computes
+    const wtRows = computeWallThicknessRows(state, designPbarg, designTc) || [];
+    const rowsByNps = _dsRowsByNps(wtRows);
+
+    // Bore schedule selections
+    const smallSch = _dsPickSch(wtRows, 0, 2) || '—';
+    const largeSch = _dsPickSch(wtRows, 2.5, 80) || '—';
+
+    const pipeType = _dsPipeType(state.material);
+    const pipeMocSm = _dsPipeMoc(fs, state.material, false);
+    const pipeMocLg = _dsPipeMoc(fs, state.material, true);
+
+    // ── Pipe Data table cells (size / OD / Sch / WT for each NPS) ──
+    const npsCellsRow = DS_NPS_AXIS.map(n => `<td>${_dsFmtNps(n)}</td>`).join('');
+    const odCellsRow  = DS_NPS_AXIS.map(n => {
+        const r = rowsByNps[n];
+        return `<td>${r ? _dsFmt(r.od_mm, 1) : '—'}</td>`;
+    }).join('');
+    const schCellsRow = DS_NPS_AXIS.map(n => {
+        const r = rowsByNps[n];
+        return `<td>${r && r.sch ? escapeHtml(r.sch) : '—'}</td>`;
+    }).join('');
+    const wtCellsRow  = DS_NPS_AXIS.map(n => {
+        const r = rowsByNps[n];
+        return `<td>${r && r.sel_thk_mm != null ? _dsFmt(r.sel_thk_mm, 2) : '—'}</td>`;
+    }).join('');
+
+    // Split TYPE / MOC / Ends across small + large bore columns
+    // Small bore = NPS ≤ 2 (cols 1–5 in our 21-NPS axis), Large = NPS ≥ 2.5 (cols 6–21)
+    const smallCols = 5;
+    const largeCols = DS_NPS_AXIS.length - smallCols;
+    const typeRow = `
+        <td colspan="${smallCols}">${escapeHtml(pipeType.sml)}</td>
+        <td colspan="${largeCols}">${escapeHtml(pipeType.lrg)}</td>`;
+    const mocRow = `
+        <td colspan="${smallCols}">${escapeHtml(pipeMocSm)}</td>
+        <td colspan="${largeCols}">${escapeHtml(pipeMocLg)}</td>`;
+    const endsRow = `
+        <td colspan="${smallCols}">BE</td>
+        <td colspan="${largeCols}">BE</td>`;
+
+    // P-T rating header (3 rows: title, press, temp + hydrotest column)
+    const ptHeaderCells = ptTemps.map(() => '').join('');
+    const pressCells = ptPress.map(p => `<td>${_dsFmt(p, 1)}</td>`).join('');
+    const tempCells  = ptLabels.map(t => `<td>${escapeHtml(t)}</td>`).join('');
+
+    // Valves block
+    const vCode = k => (v[k] || {}).code || '—';
+
+    // Fittings spec rows
+    const fittingsMoc = fs.fittings || '—';
+    const flangeMoc   = fs.flange   || '—';
+    const branchMoc   = fs.branch_outlet || '—';
+
+    // Bolts
+    const stud = (fx.bolting || {}).stud || '—';
+    const nut  = (fx.bolting || {}).hex_nut || '—';
+    const gasket = (fx.gasket || {}).spec || '—';
+
+    // Spectacle
+    const sp = fx.spectacle || {};
+
+    // Flange
+    const flangeFace = (fx.face || {}).label || '—';
+    const flangeType = (fx.type || {}).type || '—';
+    const ratingNum  = state.rating || '—';
+    const faceCode   = (fx.face || {}).code || '';
+    const faceFull   = `${ratingNum} ${faceCode}, Serrated Finish`;
+
+    const cleanMat = (typeof cleanMaterial === 'function') ? cleanMaterial(state.material) : state.material;
+
+    host.innerHTML = `
+        <div class="ds-sheet">
+            <!-- ── Header ── -->
+            <table class="ds-table ds-header-tbl">
+                <tr>
+                    <td class="ds-header-title" colspan="5">PIPING MATERIAL SPECIFICATION</td>
+                    <td class="ds-rev-lbl">Rev :</td>
+                    <td class="ds-rev-val">${escapeHtml(_dsRevisionTag())}</td>
+                </tr>
+                <tr class="ds-header-row">
+                    <td class="ds-header-cell"></td>
+                    <td class="ds-header-cell">Piping Class</td>
+                    <td class="ds-header-cell">Material</td>
+                    <td class="ds-header-cell">C.A</td>
+                    <td class="ds-header-cell">Mill Tol</td>
+                    <td class="ds-header-cell" colspan="2">Sheet No.</td>
+                </tr>
+                <tr>
+                    <td class="ds-class-badge"></td>
+                    <td class="ds-id-value"><strong>${escapeHtml(state.classCode || '—')}</strong></td>
+                    <td class="ds-id-value">${escapeHtml(state.rating || '—')}</td>
+                    <td class="ds-id-value">${escapeHtml(cleanMat || '—')}</td>
+                    <td class="ds-id-value">${escapeHtml(state.ca || '—')}</td>
+                    <td class="ds-id-value">${escapeHtml(_dsMillTol())}</td>
+                    <td class="ds-id-value">${escapeHtml(_dsSheetNo(state))}</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Design Code:</td>
+                    <td colspan="6" class="ds-value">${escapeHtml(_dsDesignCode(state))}</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Service:</td>
+                    <td colspan="6" class="ds-value">${escapeHtml(state.service || '—')}</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Branch Chart:</td>
+                    <td colspan="6" class="ds-value">Ref. APPENDIX-1, ${escapeHtml(((cf.branch_chart || {}).title || 'Chart 1').replace(/^CHART[-\s]*/i, 'Chart '))}</td>
+                </tr>
+            </table>
+
+            <!-- ── P-T Rating ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row">
+                    <td colspan="${ptTemps.length + 2}">Pressure-Temperature Rating</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Press., barg</td>
+                    ${pressCells}
+                    <td class="ds-merge-r" rowspan="2">Hydrotest Pr. (barg)</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Temp., °C</td>
+                    ${tempCells}
+                </tr>
+                <tr>
+                    <td class="ds-label" colspan="${ptTemps.length + 1}"></td>
+                    <td class="ds-id-value"><strong>${_dsFmt(hydroBarg, 1)}</strong></td>
+                </tr>
+            </table>
+
+            <!-- ── Pipe Data ── -->
+            <table class="ds-table ds-pipe-tbl">
+                <tr class="ds-section-row">
+                    <td colspan="${DS_NPS_AXIS.length + 1}">Pipe Data</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Code</td>
+                    <td colspan="${DS_NPS_AXIS.length}" class="ds-value">ASME B 36.10M</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">Size (in)</td>${npsCellsRow}
+                </tr>
+                <tr>
+                    <td class="ds-label">O.D. mm</td>${odCellsRow}
+                </tr>
+                <tr>
+                    <td class="ds-label">Sch.</td>${schCellsRow}
+                </tr>
+                <tr>
+                    <td class="ds-label">WT. mm</td>${wtCellsRow}
+                </tr>
+                <tr>
+                    <td class="ds-label">TYPE</td>${typeRow}
+                </tr>
+                <tr>
+                    <td class="ds-label">MOC</td>${mocRow}
+                </tr>
+                <tr>
+                    <td class="ds-label">Ends</td>${endsRow}
+                </tr>
+            </table>
+
+            <!-- ── Fittings Data ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row"><td colspan="3">Fittings Data</td></tr>
+                <tr>
+                    <td class="ds-label">TYPE</td>
+                    <td class="ds-value">Butt Weld (SCH to match pipe), Seamless</td>
+                    <td class="ds-value">Butt Weld (SCH to match pipe), Welded</td>
+                </tr>
+                <tr>
+                    <td class="ds-label">MOC</td>
+                    <td colspan="2" class="ds-value"><strong>${escapeHtml(fittingsMoc)}</strong></td>
+                </tr>
+                <tr><td class="ds-label">Elbow</td><td colspan="2" class="ds-value">ASME B 16.9</td></tr>
+                <tr><td class="ds-label">Tee</td><td colspan="2" class="ds-value">ASME B 16.9</td></tr>
+                <tr><td class="ds-label">Red.</td><td colspan="2" class="ds-value">ASME B 16.9</td></tr>
+                <tr><td class="ds-label">Cap</td><td colspan="2" class="ds-value">ASME B 16.9</td></tr>
+                <tr><td class="ds-label">Plug</td><td colspan="2" class="ds-value">Hex Head Plug, ASME B 16.11</td></tr>
+                <tr><td class="ds-label">Weldolet</td><td colspan="2" class="ds-value">${escapeHtml(branchMoc)}</td></tr>
+            </table>
+
+            <!-- ── Flange ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row"><td colspan="2">Flange</td></tr>
+                <tr><td class="ds-label">MOC</td><td class="ds-value"><strong>${escapeHtml(flangeMoc)}</strong></td></tr>
+                <tr><td class="ds-label">FACE</td><td class="ds-value">${escapeHtml(faceFull)}</td></tr>
+                <tr><td class="ds-label">TYPE</td><td class="ds-value">${escapeHtml(flangeType)}</td></tr>
+            </table>
+
+            <!-- ── Spectacle Blind / Spacer Blinds ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row"><td colspan="3">Spectacle Blind/Spacer Blinds</td></tr>
+                <tr><td class="ds-label">MOC</td><td colspan="2" class="ds-value"><strong>${escapeHtml(sp.moc || flangeMoc)}</strong></td></tr>
+                <tr>
+                    <td class="ds-label">Spectacle</td>
+                    <td class="ds-value">${escapeHtml(sp.small_bore || '—')}</td>
+                    <td class="ds-value">${escapeHtml(sp.large_bore || '—')}</td>
+                </tr>
+            </table>
+
+            <!-- ── Bolts / Nuts / Gaskets ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row"><td colspan="2">Bolts/ Nuts/ Gaskets</td></tr>
+                <tr><td class="ds-label">Stud Bolts</td><td class="ds-value">${escapeHtml(stud)}</td></tr>
+                <tr><td class="ds-label">Hex Nuts</td><td class="ds-value">${escapeHtml(nut)}</td></tr>
+                <tr><td class="ds-label">Gasket</td><td class="ds-value">${escapeHtml(gasket)}</td></tr>
+            </table>
+
+            <!-- ── Valves ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row"><td colspan="2">Valves</td></tr>
+                <tr><td class="ds-label">Rating</td><td class="ds-value">${escapeHtml(v.rating || '—')}</td></tr>
+                <tr><td class="ds-label">Ball</td><td class="ds-value ds-code">${escapeHtml(vCode('ball'))}</td></tr>
+                <tr><td class="ds-label">Gate</td><td class="ds-value ds-code">${escapeHtml(vCode('gate'))}</td></tr>
+                <tr><td class="ds-label">Globe</td><td class="ds-value ds-code">${escapeHtml(vCode('globe'))}</td></tr>
+                <tr><td class="ds-label">Check</td><td class="ds-value ds-code">${escapeHtml(vCode('check'))}</td></tr>
+                ${v.butterfly ? `<tr><td class="ds-label">Butterfly</td><td class="ds-value ds-code">${escapeHtml(vCode('butterfly'))}</td></tr>` : ''}
+                ${v.dbb ? `<tr><td class="ds-label">DBB</td><td class="ds-value ds-code">${escapeHtml(vCode('dbb'))}</td></tr>` : ''}
+                ${v.dbb_inst ? `<tr><td class="ds-label">DBB (Inst.)</td><td class="ds-value ds-code">${escapeHtml(vCode('dbb_inst'))}</td></tr>` : ''}
+            </table>
+
+            <!-- ── Notes ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row"><td colspan="2">NOTES</td></tr>
+                <tr><td class="ds-note-num">1</td><td class="ds-value">PMS to be read in conjunction with Project Piping Design Basis, and Valve Material Specification.</td></tr>
+                <tr><td class="ds-note-num">2</td><td class="ds-value">Weld Joint Factor for welded pipe shall be as per ASME B 31.3.</td></tr>
+                <tr><td class="ds-note-num">3</td><td class="ds-value">Welded fittings shall be 100% radiographed.</td></tr>
+                <tr><td class="ds-note-num">4</td><td class="ds-value">Spectacle blinds and spacer sizes and rating that are not available in ASME B 16.48 shall be as per manuf. standard. Design shall be submitted to Company for review and approval.</td></tr>
+                <tr><td class="ds-note-num">5</td><td class="ds-value">Maximum temperature limit for all Soft Seat Ball Valve shall be 250°C.</td></tr>
+                <tr><td class="ds-note-num">6</td><td class="ds-value">Wafer check valve to be avoided, unless the available space constraint does not allow normal check valve.</td></tr>
+                <tr><td class="ds-note-num">7</td><td class="ds-value">Wafer type Butterfly Valve may be used only in water service and shall not be used in hydrocarbon service.</td></tr>
+                <tr><td class="ds-note-num">8</td><td class="ds-value">Two jackscrew, 180 degree apart shall be provided in one of the flanges for all orifice flange and specified spectacle blind assemblies.</td></tr>
+            </table>
+        </div>
+    `;
+}
+
+
 function renderTagLegend(state) {
     const container = document.getElementById('rTagLegend');
     if (!container) return;
@@ -1617,6 +1956,7 @@ function wireReportInputs(state) {
         renderTagLegend(state);
         renderPipeFittingsTab(state, dp, dt);
         renderTab5Components(state);
+        renderDatasheetTab(state, dp, dt);
     };
 
     pBarg.addEventListener('input', () => {
@@ -1683,6 +2023,7 @@ function showReport(state) {
         renderSummaryStats(state, state.designP, state.designT);
         renderTagLegend(state);
         renderPipeFittingsTab(state, state.designP, state.designT);
+        renderDatasheetTab(state, state.designP, state.designT);
     });
     // Always land on the first tab when (re)opening the report.
     document.querySelectorAll('.report-tab').forEach((t, i) => t.classList.toggle('active', i === 0));

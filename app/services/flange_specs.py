@@ -50,6 +50,30 @@ def _is_ss316l(material: str) -> bool:
     return "SS316L" in u or "TP316L" in u
 
 
+def _is_sdss(material: str) -> bool:
+    """Project digit 25 — Super Duplex (UNS S32750)."""
+    if not material:
+        return False
+    u = material.upper()
+    return "SDSS" in u or "S32750" in u
+
+
+def _is_dss(material: str) -> bool:
+    """Project digit 20 — standard Duplex (UNS S31803).
+    Excludes Super Duplex (S32750) — see _is_sdss()."""
+    if _is_sdss(material):
+        return False
+    if not material:
+        return False
+    u = material.upper()
+    return "DSS" in u or "S31803" in u or "S32205" in u
+
+
+def _is_duplex_family(material: str) -> bool:
+    """DSS or SDSS — both use A453 Gr. 660 bolting per project §5.5."""
+    return _is_dss(material) or _is_sdss(material)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Face type — ASME B16.5
 # ──────────────────────────────────────────────────────────────────────
@@ -79,6 +103,16 @@ def bolting(material: str) -> dict:
     nace = _is_nace(material)
     ltcs = _is_ltcs(material)
     ss316l = _is_ss316l(material)
+    duplex = _is_duplex_family(material)
+    # DSS / SDSS (digits 20 + 25) — project rule: ASTM A 453 Gr. 660 for both
+    # stud and nut across ALL ratings (with or without NACE). A453 660 is
+    # precipitation-hardened austenitic and corrosion-resistant on its own,
+    # so no Xylan coating is specified.
+    if duplex:
+        return {
+            "stud":    "ASTM A 453 Gr. 660",
+            "hex_nut": "ASTM A 453 Gr. 660",
+        }
     # SS316L (digit 10) — project rule: A320 L7M / A194 7M for ALL ratings,
     # NACE or not. Low-temp-capable + hardness-controlled for sour service.
     if ss316l:
@@ -100,29 +134,71 @@ def bolting(material: str) -> dict:
 # ──────────────────────────────────────────────────────────────────────
 # Gasket — ASME B16.20
 # ──────────────────────────────────────────────────────────────────────
-# RF flange  → Spiral Wound, SS316/SS316L winding + Flexible Graphite filler
-# RTJ flange → Octagonal Ring. Material follows the flange family:
-#              - Stainless / NACE → SS316L (≤160 BHN for MR0175 compliance)
-#              - LTCS             → Soft Iron (Low-Carbon)
-#              - CS / generic     → Soft Iron
-def gasket(face: str, material: str) -> dict:
-    nace = _is_nace(material)
-    stainless = _is_stainless(material)
-    if face == "RTJ":
-        if stainless or nace:
-            note = " per NACE MR0175" if nace else ""
-            ring_mat = f"SS316L with Max. Hardness of 160 BHN{note}"
-        else:
-            ring_mat = "Soft Iron"
+# Winding (RF) and ring (RTJ) material follow the FLANGE family. Hardness
+# limits come from ASME B16.20 / NACE MR0175 + project §5.5.
+#
+# Project material map (verified against PMS-F appendix):
+#   CS / LTCS / generic  →  SW: SS316/SS316L  /  OCT: Soft Iron
+#   SS316L (digit 10)    →  SW: SS316/SS316L  /  OCT: SS316L  (160 BHN)
+#   DSS (digit 20)       →  SW: DSS UNS S31803 / OCT: UNS S 31803 (22 HRC)
+#   SDSS (digit 25)      →  SW: DSS UNS S32750 / OCT: UNS S 32750 (22 HRC)
+#   + NACE               →  add "per NACE MR0175" note; CS NACE OCT also
+#                           upgrades to SS316L per MR0175
+def _gasket_materials(material: str) -> dict:
+    """Map flange material → SW winding text + RTJ ring text + hardness.
+
+    Verified against PMS-F.pdf — NACE does NOT modify the gasket text
+    (hardness limits are baked into B16.20 standard spec). LTCS classes
+    omit HDG because hot-dip-galvanizing zinc embrittles at low temp.
+    """
+    ltcs = _is_ltcs(material)
+    if _is_sdss(material):
         return {
-            "type":   "RTJ Octagonal Ring",
-            "spec":   f"ASME B 16.20, OCT ring of {ring_mat}",
+            "sw_text":      "DSS UNS S32750",
+            "oct_text":     "UNS S 32750",
+            "oct_hardness": "22 HRC",
+            "oct_extra":    "",
         }
-    # RF
-    hardness = " with Max. Hardness of 160 BHN per NACE MR0175" if nace else ""
+    if _is_dss(material):
+        return {
+            "sw_text":      "DSS UNS S31803",
+            "oct_text":     "UNS S 31803",
+            "oct_hardness": "22 HRC",
+            "oct_extra":    "",
+        }
+    # SS316 / SS316L
+    if _is_stainless(material):
+        return {
+            "sw_text":      "SS316/SS316L",
+            "oct_text":     "SS316L",
+            "oct_hardness": "160 BHN",
+            "oct_extra":    "",
+        }
+    # CS / LTCS / generic — SW winding stays SS316/SS316L (B16.20 default),
+    # OCT ring is Soft Iron (90 BHN). HDG only on non-LTCS classes.
+    return {
+        "sw_text":      "SS316/SS316L",
+        "oct_text":     "Soft Iron",
+        "oct_hardness": "90 BHN",
+        "oct_extra":    "" if ltcs else ", HDG",
+    }
+
+
+def gasket(face: str, material: str) -> dict:
+    mats = _gasket_materials(material)
+    if face == "RTJ":
+        ring = mats["oct_text"]
+        hardness = mats["oct_hardness"]
+        extra = mats.get("oct_extra", "")
+        tail = f" with Max. Hardness of {hardness}{extra}" if hardness else ""
+        return {
+            "type": "RTJ Octagonal Ring",
+            "spec": f"ASME B 16.20, OCT ring of {ring}{tail}",
+        }
+    # RF — Spiral Wound (no hardness suffix per project spec)
     return {
         "type": "Spiral Wound",
-        "spec": f"ASME B 16.20, 4.5 mm, SS316/SS316L Spiral Wound with Flexible Graphite (F.G.) filler{hardness}",
+        "spec": f"ASME B 16.20, 4.5 mm, {mats['sw_text']} Spiral Wound with Flexible Graphite (F.G.) filler",
     }
 
 

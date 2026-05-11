@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PMS Generator</title>
     <link rel="icon" type="image/png" href="/static/images/logo.png">
-    <link rel="stylesheet" href="/static/css/styles.css?v=23">
+    <link rel="stylesheet" href="/static/css/styles.css?v=24">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -128,6 +128,9 @@
                     </button>
                     <button type="button" class="report-tab" data-rtab="components">
                         <span class="report-tab-num">5</span> Components &amp; Notes
+                    </button>
+                    <button type="button" class="report-tab" data-rtab="datasheet">
+                        <span class="report-tab-num">6</span> Datasheet (Excel View)
                     </button>
                 </nav>
 
@@ -387,6 +390,17 @@
                     </div>
                 </div>
 
+                <!-- ============================================================
+                     TAB 6 · Datasheet — Excel-style single-page view
+                     ============================================================ -->
+                <div class="report-tab-content" data-rtab="datasheet">
+                    <div class="report-header">
+                        <h2 class="report-title">PMS Datasheet (Excel View)</h2>
+                        <p class="report-sub">Print-style datasheet rendering of all PMS data — mirrors the format of the project's Excel deliverable.</p>
+                    </div>
+                    <div id="rDatasheet" class="ds-container"></div>
+                </div>
+
             </div>
 
         </section>
@@ -403,6 +417,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=30"></script>
+    <script src="/static/js/app.js?v=32"></script>
 </body>
 </html>
