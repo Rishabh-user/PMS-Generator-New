@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "source": "Project §5.5 — Copper tube dimensions (ASTM B 42 series)",
+    "applies_to": "Copper material classes (digit 40): A40, etc.",
+    "note": "Copper piping in the project caps at NPS 4\" — utility / instrument air / domestic water lines. ODs match ASME B36.10M (B 42 series uses the same OD set)."
+  },
+  "rows": [
+    { "nps": "0.5",  "nps_decimal": 0.5,  "od_mm": 21.3 },
+    { "nps": "0.75", "nps_decimal": 0.75, "od_mm": 26.7 },
+    { "nps": "1",    "nps_decimal": 1.0,  "od_mm": 33.4 },
+    { "nps": "1.5",  "nps_decimal": 1.5,  "od_mm": 48.3 },
+    { "nps": "2",    "nps_decimal": 2.0,  "od_mm": 60.3 },
+    { "nps": "3",    "nps_decimal": 3.0,  "od_mm": 88.9 },
+    { "nps": "4",    "nps_decimal": 4.0,  "od_mm": 114.0 }
+  ]
+}

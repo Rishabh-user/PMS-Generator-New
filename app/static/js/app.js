@@ -406,6 +406,7 @@ function populatePtTable(state, designTc) {
 function _npsKey(material) {
     if (!material) return 'default';
     if (/CuNi|C70600|B466/i.test(material)) return 'cuni';
+    if (/\bCOPPER\b|C12200|\bB42\b/i.test(material)) return 'copper';
     return 'default';
 }
 
@@ -1107,12 +1108,22 @@ function _dsDesignCode(state) {
 
 function _dsMillTol() { return '12.5%'; }
 
+function _isCuNiMat(material) { return /CUNI|C70600|B466/i.test(material || ''); }
+function _isCopperMat(material) {
+    const u = (material || '').toUpperCase();
+    if (u.includes('CUNI')) return false;
+    return /COPPER|C12200|\bB42\b/i.test(material || '');
+}
+
 function _dsPipeType(material) {
     const u = (material || '').toUpperCase();
-    if (/CUNI|C70600|B466/.test(u)) {
-        // CuNi (EEMUA 234): annealed seamless tube small-bore, seam-welded
-        // large-bore; ends are Plain Ends small-bore + Bevel Ends large-bore.
+    if (_isCuNiMat(u)) {
         return { sml: 'Seamless', lrg: 'Seam Welded' };
+    }
+    if (_isCopperMat(u)) {
+        // Copper temper grades per ASTM B 42: H80 hard-drawn small bore,
+        // H55 light-drawn large bore.
+        return { sml: 'Seamless Hard Drawn H80 (Regular)', lrg: 'Seamless Light Drawn H55 (Regular)' };
     }
     if (u.includes('SS') || u.includes('TP3') || u.includes('DSS') || u.includes('SDSS')) {
         return { sml: 'Seamless', lrg: 'Welded, 100% RT' };
@@ -1121,18 +1132,21 @@ function _dsPipeType(material) {
 }
 
 // Pipe end preparation by material. CuNi gets PE (Plain Ends) small bore
-// + Bevel Ends large bore; everyone else is bevelled both bores.
+// + Bevel Ends large bore; Copper is BE both bores (single merged cell).
 function _dsPipeEnds(material) {
-    if (/CUNI|C70600|B466/i.test(material || '')) {
-        return { sml: 'PE', lrg: 'Bevel Ends' };
+    if (_isCuNiMat(material)) {
+        return { sml: 'PE', lrg: 'Bevel Ends', merge: false };
     }
-    return { sml: 'BE', lrg: 'BE' };
+    if (_isCopperMat(material)) {
+        return { sml: 'BE', lrg: 'BE', merge: true };
+    }
+    return { sml: 'BE', lrg: 'BE', merge: false };
 }
 
-// Whether to merge the pipe-MOC row across both bore columns. CuNi uses a
-// single comprehensive spec covering both ends, so we merge it visually.
+// Whether to merge the pipe-MOC row across both bore columns. CuNi and
+// Copper both use a single MOC spec spanning both ends.
 function _dsPipeMocMerge(material) {
-    return /CUNI|C70600|B466/i.test(material || '');
+    return _isCuNiMat(material) || _isCopperMat(material);
 }
 
 function _dsPipeMoc(specs, material, isLarge) {
@@ -1153,14 +1167,16 @@ function _dsPipeMoc(specs, material, isLarge) {
 //   90/10 CuNi     → SW small bore, BW Welded large bore (per EEMUA 234)
 //   Everything else → BW Seamless small bore, BW Welded large bore
 function _dsConnectionStyle(material) {
-    const u = (material || '').toUpperCase();
-    if (/CUNI|C70600|B466/.test(u)) {
+    if (_isCuNiMat(material)) {
+        return { sm_type: 'SW', lg_type: 'BW, Welded' };
+    }
+    if (_isCopperMat(material)) {
         return {
-            sm_type: 'SW',
-            lg_type: 'BW, Welded',
+            sm_type: 'Brazed Fittings (SCH to match pipe), Seamless',
+            lg_type: 'Butt Weld (SCH to match pipe), Seamless',
         };
     }
-    if (u.includes('GALV')) {
+    if (/GALV/i.test(material || '')) {
         return {
             sm_type: 'Screwed (SCRD), #3000',
             lg_type: 'Butt Weld (SCH to match pipe), Seamless',
@@ -1180,10 +1196,36 @@ function _dsConnectionStyle(material) {
 function _dsComponents(material, fs) {
     const u          = (material || '').toUpperCase();
     const isGalv     = /GALV/.test(u);
-    const isCuNi     = /CUNI|C70600|B466/.test(u);
+    const isCuNi     = _isCuNiMat(u);
+    const isCopper   = _isCopperMat(u);
     const fittingMoc = fs.fittings || '—';
     const flangeMoc  = fs.flange || '—';
     const branchMoc  = fs.branch_outlet || '—';
+
+    if (isCopper) {
+        // Copper (digit 40): MOC values span vertically across the MOC row
+        // AND every component row (B 124 forged on small bore, B 42 on
+        // large bore — same value for every fitting type). Component rows
+        // show labels only — the renderer skips their value cells.
+        return {
+            sm_moc: 'ASTM B 124 UNS C11000',
+            lg_moc: 'ASTM B 42 UNS C12200',
+            moc_rowspan: true,
+            rows: [
+                { name: 'Elbow' },
+                { name: 'Tee' },
+                { name: 'Red.' },
+                { name: 'Cap' },
+                { name: 'Coupl.' },
+                { name: 'Plug' },
+                { name: 'Union' },
+                { name: 'Sockolet' },
+                { name: 'Weldolet' },
+                { name: 'Nipple' },
+                { name: 'Swage' },
+            ],
+        };
+    }
 
     if (isCuNi) {
         // CuNi (90/10) — per EEMUA 234 for every fitting. Same MOC text in
@@ -1246,28 +1288,39 @@ function _dsComponents(material, fs) {
 //   Galv CS    → Screwed (SCRD) + WN
 //   Else       → WN both bores
 function _dsFlangeType(material) {
-    const u = (material || '').toUpperCase();
-    if (/CUNI|C70600|B466/.test(u)) {
-        return { sm: 'SW Flange', lg: 'WN Flange' };
+    if (_isCuNiMat(material)) {
+        return { sm: 'SW Flange', lg: 'WN Flange', merge: false };
     }
-    if (u.includes('GALV')) {
-        return { sm: 'Screwed (SCRD)', lg: 'WN' };
+    if (_isCopperMat(material)) {
+        // Copper uses a single "Solid slip on flange" type across both bores.
+        return { sm: 'Solid slip on flange', lg: 'Solid slip on flange', merge: true };
     }
-    return { sm: 'WN', lg: 'WN' };
+    if (/GALV/i.test(material || '')) {
+        return { sm: 'Screwed (SCRD)', lg: 'WN', merge: false };
+    }
+    return { sm: 'WN', lg: 'WN', merge: false };
 }
 
-// Flange "shape" — most classes render MOC + FACE + STD (ASME B 16.5).
-// CuNi replaces FACE with a single STD line (EEMUA 234 20 BAR) and the
-// MOC is the short '90-10Cu-Ni' label. Also adds a separate Blind Flange
-// section beneath the main Flange one.
+// Flange "shape" — different per material family. Returns moc/std/face
+// strings, whether to show the FACE row, and whether the section needs a
+// trailing Blind Flange table.
 function _dsFlangeBlock(material, fs, faceFull) {
     const flangeMoc = fs.flange || '—';
-    if (/CUNI|C70600|B466/i.test(material || '')) {
+    if (_isCuNiMat(material)) {
         return {
             moc:      '90-10Cu-Ni',
             std:      'EEMUA 234 20 BAR',
             show_face: false,
             blind_moc: 'ASTM A 105N FF with 3mm 90-10 CuNi weld deposit',
+        };
+    }
+    if (_isCopperMat(material)) {
+        return {
+            moc:      'ASTM B61 UNS C92200',     // cast bronze flange material
+            std:      'ASME B 16.24',             // cast copper-alloy flanges standard
+            show_face: true,
+            face:     'FF',
+            blind_moc: 'ASTM A 105N RF With 3mm Copper over lay',
         };
     }
     return {
@@ -1277,6 +1330,13 @@ function _dsFlangeBlock(material, fs, faceFull) {
         face:     faceFull,
         blind_moc: null,
     };
+}
+
+// Section title for the bolts/nuts/gaskets block — Copper labels it
+// "Mechanical Joints" per the project Excel template.
+function _dsBoltsSectionTitle(material) {
+    if (_isCopperMat(material)) return 'Mechanical Joints';
+    return 'Bolts/ Nuts/ Gaskets';
 }
 
 function _dsPickSch(rows, lo, hi) {
@@ -1377,9 +1437,10 @@ function renderDatasheetTab(state, designPbarg, designTc) {
         : `
             <td colspan="${smallCols}">${escapeHtml(pipeMocSm)}</td>
             <td colspan="${largeCols}">${escapeHtml(pipeMocLg)}</td>`;
-    const endsRow = `
-        <td colspan="${smallCols}">${escapeHtml(pipeEnds.sml)}</td>
-        <td colspan="${largeCols}">${escapeHtml(pipeEnds.lrg)}</td>`;
+    const endsRow = pipeEnds.merge
+        ? `<td colspan="${smallCols + largeCols}">${escapeHtml(pipeEnds.sml)}</td>`
+        : `<td colspan="${smallCols}">${escapeHtml(pipeEnds.sml)}</td>
+           <td colspan="${largeCols}">${escapeHtml(pipeEnds.lrg)}</td>`;
 
     // P-T rating header (3 rows: title, press, temp + hydrotest column)
     const ptHeaderCells = ptTemps.map(() => '').join('');
@@ -1515,26 +1576,41 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                     <td class="ds-value">${escapeHtml(connStyle.sm_type)}</td>
                     <td class="ds-value">${escapeHtml(connStyle.lg_type)}</td>
                 </tr>
-                <tr>
-                    <td class="ds-label">MOC</td>
-                    ${components.moc_merge
-                        ? `<td colspan="2" class="ds-value"><strong>${escapeHtml(components.sm_moc)}</strong></td>`
-                        : `<td class="ds-value"><strong>${escapeHtml(components.sm_moc)}</strong></td>
-                           <td class="ds-value"><strong>${escapeHtml(components.lg_moc)}</strong></td>`}
-                </tr>
-                ${components.rows.map(row => {
-                    if (row.merge) {
-                        return `<tr>
-                            <td class="ds-label">${escapeHtml(row.name)}</td>
-                            <td colspan="2" class="ds-value">${escapeHtml(row.sm || '—')}</td>
-                        </tr>`;
-                    }
-                    return `<tr>
-                        <td class="ds-label">${escapeHtml(row.name)}</td>
-                        <td class="ds-value">${row.sm ? escapeHtml(row.sm) : '—'}</td>
-                        <td class="ds-value">${row.lg ? escapeHtml(row.lg) : '—'}</td>
-                    </tr>`;
-                }).join('')}
+                ${components.moc_rowspan
+                    ? (() => {
+                        // MOC cell spans MOC row + all component rows.
+                        const span = components.rows.length + 1;
+                        return `
+                            <tr>
+                                <td class="ds-label">MOC</td>
+                                <td class="ds-value mocspan" rowspan="${span}"><strong>${escapeHtml(components.sm_moc)}</strong></td>
+                                <td class="ds-value mocspan" rowspan="${span}"><strong>${escapeHtml(components.lg_moc)}</strong></td>
+                            </tr>
+                            ${components.rows.map(row => `
+                                <tr><td class="ds-label">${escapeHtml(row.name)}</td></tr>
+                            `).join('')}
+                        `;
+                    })()
+                    : `<tr>
+                            <td class="ds-label">MOC</td>
+                            ${components.moc_merge
+                                ? `<td colspan="2" class="ds-value"><strong>${escapeHtml(components.sm_moc)}</strong></td>`
+                                : `<td class="ds-value"><strong>${escapeHtml(components.sm_moc)}</strong></td>
+                                   <td class="ds-value"><strong>${escapeHtml(components.lg_moc)}</strong></td>`}
+                        </tr>
+                        ${components.rows.map(row => {
+                            if (row.merge) {
+                                return `<tr>
+                                    <td class="ds-label">${escapeHtml(row.name)}</td>
+                                    <td colspan="2" class="ds-value">${escapeHtml(row.sm || '—')}</td>
+                                </tr>`;
+                            }
+                            return `<tr>
+                                <td class="ds-label">${escapeHtml(row.name)}</td>
+                                <td class="ds-value">${row.sm ? escapeHtml(row.sm) : '—'}</td>
+                                <td class="ds-value">${row.lg ? escapeHtml(row.lg) : '—'}</td>
+                            </tr>`;
+                        }).join('')}`}
             </table>
 
             <!-- ── Flange ── -->
@@ -1542,8 +1618,10 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 <tr class="ds-section-row"><td colspan="3">Flange</td></tr>
                 <tr>
                     <td class="ds-label">TYPE</td>
-                    <td class="ds-value">${escapeHtml(flangeTypeSplit.sm)}</td>
-                    <td class="ds-value">${escapeHtml(flangeTypeSplit.lg)}</td>
+                    ${flangeTypeSplit.merge
+                        ? `<td colspan="2" class="ds-value">${escapeHtml(flangeTypeSplit.sm)}</td>`
+                        : `<td class="ds-value">${escapeHtml(flangeTypeSplit.sm)}</td>
+                           <td class="ds-value">${escapeHtml(flangeTypeSplit.lg)}</td>`}
                 </tr>
                 <tr><td class="ds-label">MOC</td><td colspan="2" class="ds-value"><strong>${escapeHtml(flangeBlock.moc)}</strong></td></tr>
                 ${flangeBlock.show_face
@@ -1553,13 +1631,14 @@ function renderDatasheetTab(state, designPbarg, designTc) {
             </table>
 
             ${flangeBlock.blind_moc ? `
-            <!-- ── Blind Flange (CuNi only) ── -->
+            <!-- ── Blind Flange ── -->
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="2">Blind Flange</td></tr>
                 <tr><td class="ds-label">MOC</td><td class="ds-value">${escapeHtml(flangeBlock.blind_moc)}</td></tr>
             </table>` : ''}
 
-            <!-- ── Spectacle Blind / Spacer Blinds ── -->
+            ${!_isCopperMat(state.material) ? `
+            <!-- ── Spectacle Blind / Spacer Blinds (skipped for Copper) ── -->
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="3">Spectacle Blind/Spacer Blinds</td></tr>
                 <tr><td class="ds-label">MOC</td><td colspan="2" class="ds-value"><strong>${escapeHtml(sp.moc || flangeMoc)}</strong></td></tr>
@@ -1568,11 +1647,11 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                     <td class="ds-value">${escapeHtml(sp.small_bore || '—')}</td>
                     <td class="ds-value">${escapeHtml(sp.large_bore || '—')}</td>
                 </tr>
-            </table>
+            </table>` : ''}
 
-            <!-- ── Bolts / Nuts / Gaskets ── -->
+            <!-- ── Bolts / Nuts / Gaskets (renamed "Mechanical Joints" for Copper) ── -->
             <table class="ds-table">
-                <tr class="ds-section-row"><td colspan="2">Bolts/ Nuts/ Gaskets</td></tr>
+                <tr class="ds-section-row"><td colspan="2">${escapeHtml(_dsBoltsSectionTitle(state.material))}</td></tr>
                 <tr><td class="ds-label">Stud Bolts</td><td class="ds-value">${escapeHtml(stud)}</td></tr>
                 <tr><td class="ds-label">Hex Nuts</td><td class="ds-value">${escapeHtml(nut)}</td></tr>
                 <tr><td class="ds-label">Gasket</td><td class="ds-value">${escapeHtml(gasket)}</td></tr>
@@ -1817,20 +1896,35 @@ function renderFlags(flags) {
 }
 
 // B31.3 Eq. 3a worked-example card. Pure render, no I/O — pulls from
-// the same state + code_factors as populateScheduleHeader. Picks NPS 6"
-// as the example size (typical primary line) and computes both cases
-// in inches, since that's how B31.3 conventions read (Table A-1 stress
-// in psi, c in inches, etc.). Re-rendered on every refresh.
+// the same state + code_factors as populateScheduleHeader. Picks a
+// representative NPS as the worked example — preferentially NPS 6 for
+// standard CS/SS, but falls back to the largest available NPS when the
+// material's dimension table is shorter (e.g. Copper caps at NPS 4").
 function renderFormulaCard(state, designPbarg, designTc) {
     const card = document.getElementById('rFormulaCard');
     if (!card) return;
 
     const dims = window._npsDimensions;
-    const npsRow = dims && dims.rows
-        ? dims.rows.find(r => r.nps_decimal === 6.0)
-        : null;
+    if (!dims || !dims.rows || !dims.rows.length) {
+        card.innerHTML = '<div class="formula-card-empty">Worked example unavailable — no NPS dimensions loaded.</div>';
+        return;
+    }
+    // Prefer NPS 6 (B31.3 example convention); fall back to the largest
+    // NPS in the loaded table so truncated material tables (Copper 0.5–4″)
+    // still surface a worked example.
+    const PREFERRED = [6.0, 4.0, 3.0, 2.0];
+    let npsRow = null;
+    for (const target of PREFERRED) {
+        npsRow = dims.rows.find(r => r.nps_decimal === target);
+        if (npsRow) break;
+    }
     if (!npsRow) {
-        card.innerHTML = '<div class="formula-card-empty">Worked example unavailable — NPS 6 not in dimensions.</div>';
+        // Last resort — biggest NPS in the table.
+        npsRow = dims.rows.reduce((a, b) =>
+            (b.nps_decimal > (a ? a.nps_decimal : -Infinity)) ? b : a, null);
+    }
+    if (!npsRow) {
+        card.innerHTML = '<div class="formula-card-empty">Worked example unavailable.</div>';
         return;
     }
 

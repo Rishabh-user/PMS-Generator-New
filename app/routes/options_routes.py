@@ -22,7 +22,9 @@ router = APIRouter(prefix="/api", tags=["options"])
 # A few — notably 90/10 CuNi — follow EEMUA 144 with different ODs at small
 # bores. Add a new override here when another material family diverges.
 _NPS_OVERRIDES: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"(?i)\bCuNi\b|C70600|B466"), "nps_dimensions_cuni.json"),
+    (re.compile(r"(?i)\bCuNi\b|C70600|B466"),       "nps_dimensions_cuni.json"),
+    # Copper must come AFTER CuNi (CuNi contains 'Cu' but isn't generic copper).
+    (re.compile(r"(?i)\bCOPPER\b|C12200|\bB42\b"),  "nps_dimensions_copper.json"),
 ]
 
 

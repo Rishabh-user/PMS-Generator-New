@@ -118,11 +118,15 @@ def _load_json(name: str) -> dict:
 
 
 # NPS list — material-aware. Most classes share the ASME B36.10M OD series;
-# CuNi follows EEMUA 144 with different ODs ≤4" so it has its own file.
+# CuNi follows EEMUA 144 (smaller ODs ≤4"), Copper follows ASTM B 42 with a
+# truncated axis (0.5"–4" only) — each has its own file.
 def _nps_rows(material: Optional[str] = None) -> list[dict]:
     fname = "nps_dimensions.json"
-    if material and re.search(r"CuNi|C70600|B466", material, re.I):
-        fname = "nps_dimensions_cuni.json"
+    if material:
+        if re.search(r"CuNi|C70600|B466", material, re.I):
+            fname = "nps_dimensions_cuni.json"
+        elif re.search(r"\bCOPPER\b|C12200|\bB42\b", material, re.I):
+            fname = "nps_dimensions_copper.json"
     return _load_json(fname)["rows"]
 
 

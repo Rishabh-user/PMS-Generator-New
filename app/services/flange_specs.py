@@ -74,6 +74,21 @@ def _is_duplex_family(material: str) -> bool:
     return _is_dss(material) or _is_sdss(material)
 
 
+def _is_cuni(material: str) -> bool:
+    return bool(material) and bool(re.search(r"CuNi|C70600|B466", material, re.I))
+
+
+def _is_copper(material: str) -> bool:
+    """Project digit 40 — pure Copper (UNS C12200). Distinct from CuNi
+    (90/10 Cu-Ni alloy, digit 30) — Copper is the bare metal."""
+    if not material:
+        return False
+    u = material.upper()
+    if "CUNI" in u:
+        return False
+    return "COPPER" in u or "C12200" in u or "B42" in u
+
+
 def _is_soft_gasket_material(material: str) -> bool:
     """Galvanized or coated/lined CS — water / utility service. Project
     spec: 3 mm neoprene/EPDM rubber flat ring per ASME B 16.21 (verified
@@ -111,8 +126,8 @@ def _is_soft_gasket_material(material: str) -> bool:
 #   150 - 600#            → RF (Raised Face)
 #   900# / 1500# / 2500#  → RTJ (Ring-Type Joint) for sealing reliability.
 def face_type(rating: str, material: str) -> dict:
-    # CuNi material uses Flat Face per EEMUA 234, regardless of rating.
-    if material and re.search(r"CuNi|C70600|B466", material, re.I):
+    # CuNi (EEMUA 234) and pure Copper (ASME B 16.24) both use Flat Face.
+    if _is_cuni(material) or _is_copper(material):
         return {"code": "FF", "label": "Flat Face"}
     rn = _rating_num(rating)
     if rn is None or rn <= 600:
@@ -135,7 +150,8 @@ def bolting(material: str) -> dict:
     ltcs = _is_ltcs(material)
     ss316l = _is_ss316l(material)
     duplex = _is_duplex_family(material)
-    cuni = bool(material) and bool(re.search(r"CuNi|C70600|B466", material, re.I))
+    cuni = _is_cuni(material)
+    copper = _is_copper(material)
     # DSS / SDSS (digits 20 + 25) — project rule: ASTM A 453 Gr. 660 for both
     # stud and nut across ALL ratings (with or without NACE). A453 660 is
     # precipitation-hardened austenitic and corrosion-resistant on its own,
@@ -145,9 +161,10 @@ def bolting(material: str) -> dict:
             "stud":    "ASTM A 453 Gr. 660",
             "hex_nut": "ASTM A 453 Gr. 660",
         }
-    # 90/10 CuNi (digit 30) — project rule: hardness-controlled NACE-grade
-    # bolting (B7M / 2HM) for general corrosion / seawater service.
-    if cuni:
+    # 90/10 CuNi (digit 30) AND pure Copper (digit 40) — project rule:
+    # hardness-controlled NACE-grade bolting (B7M / 2HM) for general
+    # corrosion / seawater service.
+    if cuni or copper:
         stud, nut = "ASTM A 193 Gr. B7M", "ASTM A 194 Gr. 2HM"
         return {
             "stud":    f"{stud}, {_BOLT_COATING}",
@@ -225,10 +242,17 @@ def _gasket_materials(material: str) -> dict:
 
 
 def gasket(face: str, material: str) -> dict:
-    # Galvanized / epoxy-lined CS classes (A3, A4, B4, D4, A5, A6 etc.) are
-    # low-pressure water/utility services — project §5.5 specifies a 3 mm
-    # neoprene/EPDM rubber flat ring per ASME B 16.21, regardless of face
-    # (these classes don't appear at 900#+ so RTJ context is moot).
+    # Pure Copper (digit 40) — CNAF full-face gasket per ASME B 16.21.
+    # (Different from CuNi which uses neoprene/EPDM — Copper bare-metal
+    # service uses compressed non-asbestos fibre for thermal stability.)
+    if _is_copper(material):
+        return {
+            "type": "Full Face Gasket",
+            "spec": "ASME B 16.21, Full face gasket, 2 mm, CNAF",
+        }
+    # Galvanized / epoxy-lined CS classes (A3, A4, B4, D4, A5, A6 etc.) and
+    # 90/10 CuNi — low-pressure water/utility — use 3 mm neoprene/EPDM flat
+    # ring per ASME B 16.21 (these classes don't reach 900#+ so RTJ is moot).
     if _is_soft_gasket_material(material):
         return {
             "type": "Soft Rubber Flat Ring",
@@ -417,13 +441,13 @@ def _valve_codes(rating: str, material: str, class_code: Optional[str]) -> dict:
     }
 
     # Butterfly — non-NACE only (project note 7 restricts wafer to water duty).
-    #   90/10 CuNi (digit 30): Wafer-PTFE only (BFWT) — water service.
-    #   150# / 300# CS / SS:    Wafer-PTFE (BFWT) + Triple-Offset-PEEK (BFTP)
-    #   600#:                   Triple-Offset-PEEK only
-    #   900#+:                  None — pressure-class uses ball/gate.
+    #   CuNi (digit 30) / Copper (digit 40): Wafer-PTFE only (BFWT) — water.
+    #   150# / 300# CS / SS:                  Wafer-PTFE + Triple-Offset-PEEK
+    #   600#:                                 Triple-Offset-PEEK only
+    #   900#+:                                None — pressure-class uses ball/gate.
     if not nace:
-        is_cuni = bool(material) and bool(re.search(r"CuNi|C70600|B466", material, re.I))
-        if is_cuni and rn and rn <= 300:
+        cu_family = _is_cuni(material) or _is_copper(material)
+        if cu_family and rn and rn <= 300:
             codes["butterfly"] = f"BFWT{tail}"
         elif rn and rn <= 300:
             codes["butterfly"] = f"BFWT{tail}, BFTP{tail}"
