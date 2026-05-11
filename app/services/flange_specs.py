@@ -216,50 +216,91 @@ def _body_material_cast(material: str) -> str:
 
 
 def _class_base(class_code: Optional[str]) -> str:
-    """Strip the §5.5 trailing suffix (N / L / LN) from a class code so the
-    valve nomenclature uses the bare letter+digit, e.g. 'A1N' → 'A1',
-    'F10N' → 'F10', 'G1LN' → 'G1'."""
+    """The project's VDS valve nomenclature KEEPS the §5.5 suffix on the
+    SPEC portion (A1N → 'A1N', G1LN → 'G1LN'), unlike some other PMS
+    conventions that strip it. Verified against the project's PMS-F
+    appendix valve catalogue."""
     if not class_code:
         return "A1"
-    return re.sub(r"L?N?$", "", class_code, flags=re.I)
+    return class_code.strip().upper()
+
+
+def _ball_seat_letters(rn: int, is_ltcs: bool) -> list[str]:
+    """Soft seat letter(s) for Ball / DBB valves per the VDS code structure
+    (M = Metal, P = PEEK, T = PTFE). Project §5.5 selection rules,
+    verified against PMS-F appendix valve catalogue:
+
+        150# / 300# (A, B):  T (PTFE) — always
+        600# (D):            P (PEEK), but T (PTFE) when service is LTCS
+                             (PEEK loses ductility below ~-65°C)
+        900# / 1500# (E, F): P (PEEK) — always
+        2500# (G):           P (PEEK) AND M (Metal) — both variants listed
+    """
+    if rn <= 300:
+        return ["T"]
+    if rn == 600:
+        return ["T"] if is_ltcs else ["P"]
+    if rn <= 1500:
+        return ["P"]
+    return ["P", "M"]
 
 
 def _valve_codes(rating: str, material: str, class_code: Optional[str]) -> dict:
-    """Build project-style valve codes per the §5.5 nomenclature:
-        [TYPE 2ch] [SUBTYPE 1ch] [SEAT 1ch] [§5.5 class base] [FACE 1ch]
-    Decoded from the project's valve catalog screenshots."""
+    """Build project-style valve codes per the VDS Code Structure:
+        [TYPE 2ch] [BORE/DESIGN 1ch] [SEAT 1ch] [SPEC] [END-CONN 1+ch]
+
+    SPEC keeps the §5.5 suffix (e.g. A1N, not A1). Verified against
+    50501-SPE-80000-PP-ET-0001 Appendix VDS table — examples:
+
+        A1     → BLRTA1R, BLFTA1R               (150#, PTFE, RF)
+        A1N    → BLRTA1NR, BLFTA1NR              (150# NACE, PTFE, RF)
+        D1     → BLRPD1R, BLFPD1R                (600#, PEEK, RF)
+        D1L    → BLRTD1LR, BLFTD1LR              (600# LTCS reverts to PTFE)
+        E1     → BLRPE1J, BLFPE1J                (900#, PEEK, RTJ)
+        G1     → BLRPG1J, BLFPG1J, BLRMG1J, BLFMG1J   (2500# emits BOTH seats)
+        DBB-Inst → DBRPE1JT                       (RTJ + NPT female end conn)
+    """
     rn   = _rating_num(rating) or 0
     nace = _is_nace(material)
+    ltcs = _is_ltcs(material)
     face_code = face_type(rating, material)["code"]
     face_suffix = "R" if face_code == "RF" else "J"
 
-    base = _class_base(class_code)
-    tail = f"{base}{face_suffix}"
+    code = _class_base(class_code)
+    tail = f"{code}{face_suffix}"
 
-    # Ball valve seat: Trunnion (T) for ≤600# non-NACE, Pressure-sealed
-    # Metal (P) for ≥900# or any NACE class.
-    ball_seat = "P" if (nace or rn >= 900) else "T"
+    seats = _ball_seat_letters(rn, ltcs)
 
-    # Universal valves — applicable to every §5.5 class (Ball / Gate / Globe / Check)
+    # Ball — emit Reduced + Full bore for each seat letter
+    ball_parts: list[str] = []
+    for s in seats:
+        ball_parts.append(f"BLR{s}{tail}")
+        ball_parts.append(f"BLF{s}{tail}")
+
     codes = {
-        "ball":   f"BLR{ball_seat}{tail}, BLF{ball_seat}{tail}",
-        "gate":   f"GAYM{tail}",
+        "ball":   ", ".join(ball_parts),
+        "gate":   f"GAYM{tail}",                              # GA + Y (Screw-Yoke) + M (Metal)
         "globe":  f"GLYM{tail}",
-        "check":  f"CHPM{tail}, CHSM{tail}, CHDM{tail}",
+        "check":  f"CHPM{tail}, CHSM{tail}, CHDM{tail}",       # Piston + Swing + Dual-Plate, all M
     }
 
-    # Butterfly — low-pressure water / utility / large-bore on-off duty.
-    # Practice: 150# and 300# only, non-NACE. 600#+ uses ball/gate for
-    # sealing reliability; sour service excludes butterfly entirely.
-    if rn and rn <= 300 and not nace:
-        codes["butterfly"] = f"BFWT{tail}, BFTP{tail}"
+    # Butterfly — non-NACE only (project note 7 restricts wafer to water duty).
+    #   150# / 300#: Wafer-PTFE (BFWT) + Triple-Offset-PEEK (BFTP)
+    #   600#:        Triple-Offset-PEEK only
+    #   900#+:       None — pressure-class uses ball/gate for sealing reliability
+    if not nace:
+        if rn and rn <= 300:
+            codes["butterfly"] = f"BFWT{tail}, BFTP{tail}"
+        elif rn == 600:
+            codes["butterfly"] = f"BFTP{tail}"
 
-    # DBB (Double Block & Bleed) — positive double-isolation, mandated for
-    # high-pressure sealing-critical service. Project §5.5 catalog lists
-    # DBB on E (900#), F (1500#), G (2500#) classes only.
+    # DBB (Double Block & Bleed) — 900#+ classes only (E/F/G). Seat letters
+    # follow the Ball rule, so G class emits both P and M variants.
     if rn and rn >= 900:
-        codes["dbb"]      = f"DBR{ball_seat}{tail}"
-        codes["dbb_inst"] = f"DBR{ball_seat}{tail}T"   # "T" = threaded instrument connection
+        dbb_parts = [f"DBR{s}{tail}" for s in seats]
+        codes["dbb"] = ", ".join(dbb_parts)
+        # Instrument DBB uses PEEK seat + JT end connection (RTJ + NPT female)
+        codes["dbb_inst"] = f"DBR{seats[0]}{tail}T"
     return codes
 
 
