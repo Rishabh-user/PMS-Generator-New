@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     app_port: int = 8004
     log_level: str = "INFO"
 
+    # Anthropic Claude — used for AI engineering-notes generation on Tab 5.
+    # Optional: when unset the app falls back to the placeholder UI.
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-6"
+    anthropic_max_tokens: int = 2000
+
     base_dir: Path = BASE_DIR
     data_dir: Path = BASE_DIR / "data"
     static_dir: Path = BASE_DIR / "static"

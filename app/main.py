@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from app.config import settings
 from app.routes.options_routes import router as options_router
 from app.routes.resolve_routes import router as resolve_router
+from app.routes.ai_routes import router as ai_router
 
 
 logging.basicConfig(
@@ -39,6 +40,7 @@ templates = Jinja2Templates(directory=str(settings.templates_dir))
 
 app.include_router(options_router)
 app.include_router(resolve_router)
+app.include_router(ai_router)
 
 
 @app.get("/", response_class=HTMLResponse)

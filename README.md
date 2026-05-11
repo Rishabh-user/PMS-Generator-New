@@ -36,6 +36,28 @@ python run.py
 
 Open <http://localhost:8004/>.
 
+## AI engineering notes (optional)
+
+Tab 5 generates context-aware engineering notes via Anthropic Claude. To enable it:
+
+1. Create a `.env` file in the project root:
+
+   ```env
+   ANTHROPIC_API_KEY=sk-ant-api03-...
+   ANTHROPIC_MODEL=claude-sonnet-4-6
+   ```
+
+2. Restart the server.
+
+3. Click **Generate Notes** on Tab 5 — Claude reviews the resolved class +
+   design conditions and surfaces 4-6 engineering considerations
+   (NACE compliance, PWHT, NDE level, procurement, service-material
+   compatibility).
+
+The deterministic engineering layer (stress, schedules, wall thickness,
+hydrotest) stays untouched — AI only augments human review. Without the
+key, Tab 5 shows a setup hint and the rest of the app works normally.
+
 ## API
 
 | Method | Path | Returns |
