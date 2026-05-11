@@ -1629,12 +1629,12 @@ function _renderTubingDatasheet(host, state, fs, v, pt) {
             <!-- ── Header ── -->
             <table class="ds-table ds-header-tbl">
                 <tr>
-                    <td class="ds-header-title" colspan="5">PIPING MATERIAL SPECIFICATION</td>
+                    <td class="ds-logo-cell" rowspan="3"><img src="/static/images/logo.png" alt="Logo" onerror="this.style.display='none'"></td>
+                    <td class="ds-header-title" colspan="4">PIPING MATERIAL SPECIFICATION</td>
                     <td class="ds-rev-lbl">Rev :</td>
                     <td class="ds-rev-val">A0</td>
                 </tr>
                 <tr class="ds-header-row">
-                    <td class="ds-header-cell"></td>
                     <td class="ds-header-cell">Piping Class</td>
                     <td class="ds-header-cell">Material</td>
                     <td class="ds-header-cell">C.A</td>
@@ -1642,7 +1642,6 @@ function _renderTubingDatasheet(host, state, fs, v, pt) {
                     <td class="ds-header-cell" colspan="2">Sheet No.</td>
                 </tr>
                 <tr>
-                    <td class="ds-class-badge"></td>
                     <td class="ds-id-value"><strong>${escapeHtml(displayedCode)}</strong></td>
                     <td class="ds-id-value">—</td>
                     <td class="ds-id-value">${escapeHtml(cleanMat || '—')}</td>
@@ -1867,12 +1866,12 @@ function renderDatasheetTab(state, designPbarg, designTc) {
             <!-- ── Header ── -->
             <table class="ds-table ds-header-tbl">
                 <tr>
-                    <td class="ds-header-title" colspan="5">PIPING MATERIAL SPECIFICATION</td>
+                    <td class="ds-logo-cell" rowspan="3"><img src="/static/images/logo.png" alt="Logo" onerror="this.style.display='none'"></td>
+                    <td class="ds-header-title" colspan="4">PIPING MATERIAL SPECIFICATION</td>
                     <td class="ds-rev-lbl">Rev :</td>
                     <td class="ds-rev-val">${escapeHtml(_dsRevisionTag())}</td>
                 </tr>
                 <tr class="ds-header-row">
-                    <td class="ds-header-cell"></td>
                     <td class="ds-header-cell">Piping Class</td>
                     <td class="ds-header-cell">Material</td>
                     <td class="ds-header-cell">C.A</td>
@@ -1880,7 +1879,6 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                     <td class="ds-header-cell" colspan="2">Sheet No.</td>
                 </tr>
                 <tr>
-                    <td class="ds-class-badge"></td>
                     <td class="ds-id-value"><strong>${escapeHtml(_dsEffectiveClassCode(state) || '—')}</strong></td>
                     <td class="ds-id-value">${escapeHtml(state.rating || '—')}</td>
                     <td class="ds-id-value">${escapeHtml(cleanMat || '—')}</td>

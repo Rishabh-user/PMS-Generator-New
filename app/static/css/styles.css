@@ -741,6 +741,22 @@ label.multi-select-option > span { flex: 1; }
     text-align: center;
     color: #b00020;
 }
+
+/* Logo cell — rowspan=3 on the leftmost column of the Datasheet header.
+   Matches the Excel export's logo placement. */
+.ds-logo-cell {
+    background: #fff;
+    text-align: center;
+    vertical-align: middle;
+    padding: 8px;
+    width: 160px;
+    min-width: 120px;
+}
+.ds-logo-cell img {
+    max-width: 100%;
+    max-height: 80px;
+    object-fit: contain;
+}
 .ds-id-value { text-align: center; font-weight: 600; }
 .ds-label    { background: #f3f3f3; font-weight: 700; padding: 4px 8px; white-space: nowrap; }
 .ds-value    { padding: 4px 8px; }

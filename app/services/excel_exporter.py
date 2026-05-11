@@ -1,17 +1,13 @@
-"""Excel export for a resolved PMS class.
+"""Excel export — Datasheet-style xlsx that mirrors the on-screen Excel
+View (Tab 6) row-for-row.
 
-Generates a single-sheet datasheet matching the look of the project's
-Excel templates — Identification header, P-T Rating table, Wall Thickness
-Calculation table, Pipe & Fittings tables (Small + Large bore), Flange /
-Bolts / Gasket / Spectacle / Valves cards, AI engineering notes if any.
+Header has the SP Energy logo on the left + identification block on the
+right. Sections (P-T Rating, Pipe Data, Fittings Data, Flange, Blind
+Flange, Spectacle/Spade, Bolts/Nuts/Gaskets, Valves, Notes) are material-
+aware and follow the same per-material rules as the JS Datasheet
+renderer in `app/static/js/app.js`.
 
-Backed by openpyxl (already a dependency of the extractors). The exporter
-re-uses the resolver + lookup services so values match the live UI byte-
-for-byte — no second source of truth.
-
-Public entry point:
-    build_workbook(class_code, rating, material, ca, service,
-                   design_p_barg, design_t_c, mdmt_c, joint_type) -> BytesIO
+Public entry: build_workbook(...) → (BytesIO, filename).
 """
 from __future__ import annotations
 
@@ -38,7 +34,8 @@ from app.services import (
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Styles
+# Styles (legacy navy palette kept for reference; new Datasheet palette
+# is the DS_* block further down).
 # ──────────────────────────────────────────────────────────────────────
 NAVY        = "FF0E3A5C"
 NAVY_LIGHT  = "FFF0F6FC"
@@ -145,7 +142,7 @@ def _b3610_rows() -> dict[float, list[dict]]:
     by_nps: dict[float, list[dict]] = {}
     for r in data.get("rows", []):
         if r.get("schedule") is None and r.get("identification") is None:
-            continue   # skip line-pipe-only intermediate WT rows
+            continue
         by_nps.setdefault(r["nps_decimal"], []).append(r)
     for k in by_nps:
         by_nps[k].sort(key=lambda r: r["wt_mm"])
@@ -181,14 +178,8 @@ def _pick_schedule(
     fallback_by_nps: Optional[dict] = None,
 ) -> Optional[dict]:
     """Pick the lightest schedule whose WT ≥ calc_thk_mm.
-
-    Stainless service uses B36.19M (5S/10S/40S/80S) primarily. That table
-    tops out at 80S — high-pressure stainless classes (e.g. G10 SS316L
-    2500#) can need a heavier wall than 80S provides. In that case fall
-    back to B36.10M (SCH 160 / XXS) — same OD, just a heavier wall the
-    stainless table doesn't list. Without this fallback the picker would
-    silently land on 80S, a wall THINNER than required.
-    """
+    Stainless service uses B36.19M primarily; falls back to B36.10M for
+    walls heavier than 80S."""
     if calc_thk_mm is None:
         return None
 
@@ -207,10 +198,6 @@ def _pick_schedule(
 
     status = "OK"
     if pick is None:
-        # No wall in either table covers the calc — flag NOT OK and return
-        # the heaviest available from the heavier table (fallback if any,
-        # else primary). For stainless this surfaces "NOT OK at XXS 7.82"
-        # instead of misleading "NOT OK at 80S 3.91".
         heavy_table = fallback_by_nps if fallback_by_nps else primary_by_nps
         rows = (heavy_table.get(nps) if heavy_table else None) or []
         if not rows:
@@ -229,379 +216,870 @@ def _joint_eff(joint: str) -> float:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Sheet builders — each appends rows to ws and returns the next row idx
+# Datasheet palette + helpers — match the on-screen Excel View (Tab 6).
+# Style: black thin borders, light-gray section bars + label cells,
+# white value cells. Mirrors the JS Datasheet HTML row-for-row.
 # ──────────────────────────────────────────────────────────────────────
+DS_BLACK     = "FF000000"
+DS_BG_SECT   = "FFD9D9D9"
+DS_BG_LABEL  = "FFF3F3F3"
 
-def _write_kv(ws, row: int, label: str, value: Any, *, bold: bool = False, span: int = 1) -> int:
-    """Two-cell key/value row. label in col A, value spanning B..(B+span-1)."""
-    ws.cell(row=row, column=1, value=label).font = FONT_LABEL
-    ws.cell(row=row, column=1).fill = FILL_GRAY
-    ws.cell(row=row, column=1).alignment = LEFT
-    ws.cell(row=row, column=1).border = BORDER_ALL
+_ds_thin = Side(style="thin", color=DS_BLACK)
+DS_BORDER     = Border(left=_ds_thin, right=_ds_thin, top=_ds_thin, bottom=_ds_thin)
+
+DS_FONT_TITLE = Font(name="Calibri", size=12, bold=True, color=DS_BLACK[2:])
+DS_FONT_SECT  = Font(name="Calibri", size=10, bold=True, color=DS_BLACK[2:])
+DS_FONT_LABEL = Font(name="Calibri", size=10, bold=True, color=DS_BLACK[2:])
+DS_FONT_VAL   = Font(name="Calibri", size=10, color=DS_BLACK[2:])
+DS_FONT_VAL_B = Font(name="Calibri", size=10, bold=True, color=DS_BLACK[2:])
+DS_FONT_CODE  = Font(name="Consolas", size=10, bold=True, color=DS_BLACK[2:])
+
+DS_FILL_SECT  = PatternFill("solid", fgColor=DS_BG_SECT)
+DS_FILL_LABEL = PatternFill("solid", fgColor=DS_BG_LABEL)
+
+DS_CENTER     = Alignment(horizontal="center", vertical="center", wrap_text=True)
+DS_LEFT       = Alignment(horizontal="left",   vertical="center", wrap_text=True, indent=1)
+DS_LABEL_AL   = Alignment(horizontal="left",   vertical="center", indent=1)
+
+
+# ── Material detection (mirrors flange_specs / app.js helpers) ────
+def _ds_is_cuni(m): return bool(m) and bool(re.search(r"CuNi|C70600|B466", m, re.I))
+def _ds_is_copper(m):
+    if not m: return False
+    if "CUNI" in m.upper(): return False
+    return bool(re.search(r"\bCOPPER\b|C12200|\bB42\b", m, re.I))
+def _ds_is_gre(m): return bool(m) and bool(re.search(r"\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced", m, re.I))
+def _ds_is_cpvc(m): return bool(m) and bool(re.search(r"\bCPVC\b", m, re.I))
+def _ds_is_titanium(m): return bool(m) and bool(re.search(r"\bTITANIUM\b|\bTi\b|B861", m, re.I))
+def _ds_is_galv(m): return bool(m) and bool(re.search(r"GALV", m, re.I))
+def _ds_is_bonstrand_svc(s): return bool(s) and bool(re.search(r"Hypochlorite|BONSTRAND", s, re.I))
+def _ds_is_tubing(cc, m=None):
+    if cc and re.match(r"^T\d", cc.strip(), re.I): return True
+    if m  and re.search(r"Tubing|N08367|6\s*MO", m, re.I): return True
+    return False
+
+
+def _ds_displayed_code(class_code: str, material: str, service: str) -> str:
+    """GRE differentiates A50/A51/A52 by service; others use resolver code."""
+    if not _ds_is_gre(material):
+        return class_code or ""
+    s = service or ""
+    if re.search(r"Hypochlorite", s, re.I): return "A51"
+    if re.search(r"Special",      s, re.I): return "A52"
+    return "A50"
+
+
+def _ds_fmt(v, dp=1):
+    if v is None:
+        return "—"
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    s = f"{n:.{dp}f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def _ds_fmt_nps(n):
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return str(n)
+    if n == 0.5:  return "0.5"
+    if n == 0.75: return "0.75"
+    if n == 1.5:  return "1.5"
+    if n.is_integer(): return str(int(n))
+    return str(n)
+
+
+# ── Cell writers ────────────────────────────────────────────────────
+def _ds_style(cell, *, font=None, fill=None, align=None, border=True):
+    if font   is not None: cell.font = font
+    if fill   is not None: cell.fill = fill
+    if align  is not None: cell.alignment = align
+    if border: cell.border = DS_BORDER
+
+
+def _ds_write(ws, row, col, value, *, span=1, font=None, fill=None, align=None, border=True):
+    """Write a value and optionally merge across `span` columns."""
+    cell = ws.cell(row=row, column=col, value=value)
+    _ds_style(cell, font=font, fill=fill, align=align, border=border)
     if span > 1:
-        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=1 + span)
-    cell = ws.cell(row=row, column=2, value=value if value is not None else "—")
-    cell.font = FONT_VALUE_BOLD if bold else FONT_VALUE
-    cell.alignment = LEFT
-    cell.border = BORDER_ALL
+        ws.merge_cells(start_row=row, start_column=col, end_row=row, end_column=col + span - 1)
+        for c in range(col + 1, col + span):
+            _ds_style(ws.cell(row=row, column=c), font=font, fill=fill, align=align, border=border)
+    return cell
+
+
+def _ds_section_row(ws, row, text, total_cols):
+    """Full-width gray section header bar."""
+    _ds_write(ws, row, 1, text, span=total_cols,
+              font=DS_FONT_SECT, fill=DS_FILL_SECT, align=DS_CENTER)
     return row + 1
 
 
-def _section_header(ws, row: int, text: str, total_cols: int = 7) -> int:
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=total_cols)
-    c = ws.cell(row=row, column=1, value=text)
-    c.font = Font(name="Calibri", size=11, bold=True, color="FFFFFFFF")
-    c.alignment = CENTER
-    c.fill = FILL_HEADER
-    c.border = BORDER_HEAD
+def _ds_label_value_row(ws, row, label, value, total_cols, *, value_bold=False, label_span=1, value_align=None):
+    """Label cell (col A) + wide value cell merged across remaining cols."""
+    _ds_write(ws, row, 1, label, span=label_span,
+              font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+    value_font = DS_FONT_VAL_B if value_bold else DS_FONT_VAL
+    _ds_write(ws, row, 1 + label_span, value, span=total_cols - label_span,
+              font=value_font, fill=None, align=(value_align or DS_LEFT))
     return row + 1
 
 
-def _build_identification(ws, row: int, ctx: dict) -> int:
-    """Top header block — PMS code, rating, material, design conditions."""
-    # Title
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
-    t = ws.cell(row=row, column=1, value="PIPING MATERIAL SPECIFICATION")
-    t.font = FONT_TITLE
-    t.alignment = CENTER
-    t.fill = FILL_BAND
-    ws.row_dimensions[row].height = 26
+# ── 1. Header — logo + title + class block + Design Code/Service/Branch
+def _ds_build_header(ws, row, ctx, total_cols):
+    logo_cols = 2
+
+    # Title row
+    _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
+    _ds_write(ws, row, logo_cols + 1, "PIPING MATERIAL SPECIFICATION",
+              span=total_cols - logo_cols - 2, font=DS_FONT_TITLE, align=DS_CENTER)
+    _ds_write(ws, row, total_cols - 1, "Rev :",
+              font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_CENTER)
+    _ds_write(ws, row, total_cols, ctx.get("rev", "A0"),
+              font=DS_FONT_LABEL, align=DS_CENTER)
+    header_row_start = row
     row += 1
 
-    # Sub-line
-    sub = f"PMS Class: {ctx['class_code']}   ·   Generated: {datetime.now():%Y-%m-%d %H:%M}"
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
-    s = ws.cell(row=row, column=1, value=sub)
-    s.font = FONT_NOTE
-    s.alignment = CENTER
-    s.fill = FILL_BAND
+    # Class-block column splits (5 segments across the right side)
+    right_cols = total_cols - logo_cols
+    seg = max(2, right_cols // 5)
+    cols = [logo_cols + 1 + i*seg for i in range(5)]
+    spans = [seg, seg, seg, seg, total_cols - cols[4] + 1]
+    labels = ["Piping Class", "Material", "C.A", "Mill Tol", "Sheet No."]
+
+    _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
+    for c, lbl, sp in zip(cols, labels, spans):
+        _ds_write(ws, row, c, lbl, span=sp,
+                  font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_CENTER)
     row += 1
 
-    row += 1  # blank spacer
+    # Value row
+    is_tubing_cls = _ds_is_tubing(ctx["class_code"], ctx["material"])
+    displayed_code = _ds_displayed_code(ctx["class_code"], ctx["material"], ctx.get("service"))
+    mill = "0.0%" if is_tubing_cls else "12.5%"
+    rating_disp = "—" if is_tubing_cls else ctx["rating"]
+    values = [displayed_code, rating_disp, ctx["material"], ctx["ca"], mill]
+    sheet_no = displayed_code
 
-    row = _section_header(ws, row, "1. IDENTIFICATION")
-    row = _write_kv(ws, row, "PMS Code",           ctx["class_code"], bold=True)
-    row = _write_kv(ws, row, "Pressure Rating",    ctx["rating"], bold=True)
-    row = _write_kv(ws, row, "Material",           ctx["material"])
-    row = _write_kv(ws, row, "Material Spec",      ctx.get("fitting_pipe", "—"))
-    row = _write_kv(ws, row, "Corrosion Allowance",ctx["ca"])
-    row = _write_kv(ws, row, "Service",            ctx["service"])
-    return row + 1
+    _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
+    for c, v, sp in zip(cols, values, spans):
+        _ds_write(ws, row, c, v, span=sp, font=DS_FONT_VAL_B, align=DS_CENTER)
+    # Replace the last cell (Sheet No.) with the sheet value
+    _ds_write(ws, row, cols[4], sheet_no, span=spans[4], font=DS_FONT_VAL_B, align=DS_CENTER)
+    row += 1
+
+    # Design Code / Service / Branch Chart
+    has_nace = "NACE" in (ctx["material"] or "").upper()
+    design_code = ("—" if is_tubing_cls else
+                   ("ASME B 31.3, NACE-MR-01-75 / ISO-15156-1/2/3" if has_nace else "ASME B 31.3"))
+    branch = ctx.get("branch_chart") or {}
+    if is_tubing_cls:
+        bc_label = "—"
+    else:
+        title = branch.get("title", "") or "Chart 1"
+        title = re.sub(r"^CHART[-\s]*", "Chart ", title)
+        bc_label = f"Ref. APPENDIX-1, {title}"
+
+    for label, value in [
+        ("Design Code:",  design_code),
+        ("Service:",      ctx.get("service") or "—"),
+        ("Branch Chart:", bc_label),
+    ]:
+        _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
+        _ds_write(ws, row, logo_cols + 1, label, span=seg,
+                  font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+        _ds_write(ws, row, logo_cols + 1 + seg, value, span=total_cols - (logo_cols + seg),
+                  font=DS_FONT_VAL, align=DS_LEFT)
+        row += 1
+
+    # Merge the left logo footprint across all header rows
+    header_row_end = row - 1
+    try:
+        ws.merge_cells(start_row=header_row_start, start_column=1,
+                       end_row=header_row_end, end_column=logo_cols)
+    except Exception:
+        pass
+
+    # Embed the logo image (PNG) in the merged left cell.
+    from openpyxl.drawing.image import Image as XLImage
+    logo_path = settings.static_dir / "images" / "logo.png"
+    if logo_path.exists():
+        try:
+            img = XLImage(str(logo_path))
+            img.width  = 170
+            img.height = 90
+            ws.add_image(img, f"A{header_row_start}")
+        except Exception:
+            pass
+    for r in range(header_row_start, header_row_end + 1):
+        if (ws.row_dimensions[r].height or 0) < 22:
+            ws.row_dimensions[r].height = 22
+
+    return row
 
 
-def _build_design_conditions(ws, row: int, ctx: dict) -> int:
-    row = _section_header(ws, row, "2. DESIGN CONDITIONS")
-    row = _write_kv(ws, row, "Design Pressure (barg)",      f"{ctx['design_p']:.1f}")
-    row = _write_kv(ws, row, "Design Pressure (psig)",      f"{_bargToPsig(ctx['design_p']):.1f}")
-    row = _write_kv(ws, row, "Design Temperature (°C)",     f"{ctx['design_t']:.0f}")
-    row = _write_kv(ws, row, "Design Temperature (°F)",     f"{_cToF(ctx['design_t']):.1f}")
-    row = _write_kv(ws, row, "MDMT (°C)",                   f"{ctx['mdmt']:.0f}")
-    row = _write_kv(ws, row, "Joint Type",                  ctx['joint_type'])
-    row = _write_kv(ws, row, "Joint Efficiency (E)",        ctx['E'])
-    row = _write_kv(ws, row, "Y Coefficient",               ctx['Y'])
-    row = _write_kv(ws, row, "W Factor",                    ctx['W'])
-    row = _write_kv(ws, row, "Mill Tolerance",              "12.5%")
-    row = _write_kv(ws, row, "Hydrotest Pressure (1.5×P)",  f"{ctx['hydro_barg']:.1f} barg")
-    return row + 1
+# ── 2. P-T Rating ───────────────────────────────────────────────────
+def _ds_build_pt(ws, row, ctx, total_cols):
+    pt = ctx["pt"] or {}
+    temps   = pt.get("temperatures_c") or []
+    presses = pt.get("pressures_barg") or []
+    labels  = pt.get("temp_labels") or [str(t) for t in temps]
+    hydro   = pt.get("hydrotest_barg")
+    if hydro is None:
+        hydro = (max(presses) * 1.5) if presses else ctx.get("design_p", 0) * 1.5
 
+    title = ("Pressure-Temperature Rating (EEMUA 234, Table 69)"
+             if _ds_is_titanium(ctx["material"])
+             else "Pressure-Temperature Rating")
+    row = _ds_section_row(ws, row, title, total_cols)
 
-def _build_pt_table(ws, row: int, ctx: dict) -> int:
-    pt = ctx.get("pt")
-    if not pt or not pt.get("temperatures_c"):
-        return row
-    row = _section_header(ws, row, "3. PRESSURE-TEMPERATURE RATING (ASME B16.5)")
-    # Header row: Pressure | T1 | T2 | ...
-    temps  = pt["temperatures_c"]
-    labels = pt.get("temp_labels") or [str(t) for t in temps]
-    presss = pt["pressures_barg"]
+    n = len(presses)
+    hydro_span = max(2, total_cols - 1 - n)
 
-    ws.cell(row=row, column=1, value="Pressure (barg) →").font = FONT_LABEL
-    ws.cell(row=row, column=1).fill = FILL_GRAY
-    ws.cell(row=row, column=1).border = BORDER_ALL
+    # Pressure row
+    _ds_write(ws, row, 1, "Press., barg",
+              font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+    for i, p in enumerate(presses):
+        _ds_write(ws, row, 2 + i, _ds_fmt(p, 1), font=DS_FONT_VAL, align=DS_CENTER)
+    for i in range(n, total_cols - 1 - hydro_span):
+        _ds_write(ws, row, 2 + i, "", font=DS_FONT_VAL, align=DS_CENTER)
+    _ds_write(ws, row, total_cols - hydro_span + 1, "Hydrotest Pr. (barg)",
+              span=hydro_span, font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_CENTER)
+    row += 1
+
+    # Temperature row
+    _ds_write(ws, row, 1, "Temp., °C",
+              font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
     for i, lbl in enumerate(labels):
-        c = ws.cell(row=row, column=2 + i, value=str(lbl))
-        c.font = FONT_HEADER
-        c.fill = FILL_HEADER
-        c.alignment = CENTER
-        c.border = BORDER_ALL
+        _ds_write(ws, row, 2 + i, str(lbl), font=DS_FONT_VAL, align=DS_CENTER)
+    for i in range(n, total_cols - 1 - hydro_span):
+        _ds_write(ws, row, 2 + i, "", font=DS_FONT_VAL, align=DS_CENTER)
+    _ds_write(ws, row, total_cols - hydro_span + 1, _ds_fmt(hydro, 1),
+              span=hydro_span, font=DS_FONT_VAL_B, align=DS_CENTER)
     row += 1
 
-    ws.cell(row=row, column=1, value="P (barg)").font = FONT_LABEL
-    ws.cell(row=row, column=1).fill = FILL_GRAY
-    ws.cell(row=row, column=1).border = BORDER_ALL
-    for i, p in enumerate(presss):
-        c = ws.cell(row=row, column=2 + i, value=p)
-        c.alignment = CENTER
-        c.border = BORDER_ALL
-    row += 1
-    return row + 1
-
-
-def _build_wall_thickness_table(ws, row: int, ctx: dict) -> int:
-    row = _section_header(ws, row, "4. WALL THICKNESS CALCULATION TABLE (ASME B31.3 §304.1.2 Eq. 3a)")
-    headers = ["NPS", "D (mm)", "t (mm)", "D/6 (mm)", "If t<D/6",
-               "t_m (mm)", "Mill Tol", "Calc Thk T (mm)",
-               "SCH", "Sel. Thk (mm)", "Status"]
-    for i, h in enumerate(headers):
-        c = ws.cell(row=row, column=1 + i, value=h)
-        c.font = FONT_HEADER
-        c.fill = FILL_HEADER
-        c.alignment = CENTER
-        c.border = BORDER_ALL
-    ws.row_dimensions[row].height = 30
-    row += 1
-
-    fmt = lambda v: f"{v:.3f}" if isinstance(v, (int, float)) else "—"
-    for rrow in ctx["wt_rows"]:
-        not_ok = (rrow.get("status") == "NOT OK")
-        # Project rule: NOT OK → SCH blanked (—), SEL.THK echoes calc thk (2 dp).
-        # Engineer must spec a custom wall ≥ calc thk for that NPS.
-        if not_ok:
-            sch_disp = "—"
-            sel_thk_disp = f"{rrow['calc_thk_mm']:.2f}" if rrow.get("calc_thk_mm") is not None else "—"
-        else:
-            sch_disp = rrow.get("sch") or "—"
-            sel_thk_disp = f"{rrow['sel_thk_mm']:.2f}" if rrow.get("sel_thk_mm") is not None else "—"
-        cells = [
-            rrow["nps"],
-            f"{rrow['od_mm']:.1f}" if rrow.get("od_mm") is not None else "—",
-            fmt(rrow.get("t_mm")),
-            fmt(rrow.get("d_over_6")),
-            rrow.get("validity") or "—",
-            fmt(rrow.get("tm_mm")),
-            "12.5%",
-            fmt(rrow.get("calc_thk_mm")),
-            sch_disp,
-            sel_thk_disp,
-            rrow.get("status") or "—",
-        ]
-        for i, v in enumerate(cells):
-            c = ws.cell(row=row, column=1 + i, value=v)
-            c.alignment = CENTER
-            c.border = BORDER_ALL
-            c.font = FONT_VALUE
-            if i == 4 and v == "ALERT":
-                c.fill = FILL_RED
-            elif i == 10 and v == "NOT OK":
-                c.fill = FILL_RED
-            elif i == 10 and v == "OK":
-                c.fill = FILL_GREEN
-        row += 1
-    return row + 1
-
-
-def _build_pipe_and_fittings(ws, row: int, ctx: dict) -> int:
-    fs = ctx.get("fitting_specs") or {}
-    components = [
-        ("Pipe",                fs.get("pipe"),           "ASTM"),
-        ("90° LR Elbow",        fs.get("fittings"),       "ASME B 16.9"),
-        ("45° Elbow",           fs.get("fittings"),       "ASME B 16.9"),
-        ("Equal Tee",           fs.get("fittings"),       "ASME B 16.9"),
-        ("Reducing Tee",        fs.get("fittings"),       "ASME B 16.9"),
-        ("Concentric Reducer",  fs.get("fittings"),       "ASME B 16.9"),
-        ("Eccentric Reducer",   fs.get("fittings"),       "ASME B 16.9"),
-        ("Pipe Cap",            fs.get("fittings"),       "ASME B 16.9"),
-        ("Plug",                fs.get("fittings"),       "Hex Head Plug, ASME B 16.11"),
-        ("Weldolet",            fs.get("branch_outlet"),  "MSS SP-97"),
-    ]
-
-    row = _section_header(ws, row, "5. PIPE & FITTINGS MATERIAL ASSIGNMENT")
-    headers = ["Component", "Material", "Schedule / Class", "Standard"]
-    for i, h in enumerate(headers):
-        c = ws.cell(row=row, column=1 + i, value=h)
-        c.font = FONT_HEADER
-        c.fill = FILL_HEADER
-        c.alignment = CENTER
-        c.border = BORDER_ALL
-    row += 1
-
-    sch_small = ctx.get("small_bore_sch", "—")
-    sch_large = ctx.get("large_bore_sch", "—")
-
-    def _write_component_row(bore_label: str, sch: str):
-        cells = [
-            (f"{name} ({bore_label})", FONT_LABEL,  LEFT),
-            (mat or "—",               FONT_VALUE,  LEFT),
-            (sch,                      FONT_VALUE,  CENTER),
-            (std,                      FONT_VALUE,  LEFT),
-        ]
-        for i, (val, font, align) in enumerate(cells):
-            c = ws.cell(row=row, column=1 + i, value=val)
-            c.font = font
-            c.alignment = align
-            c.border = BORDER_ALL
-
-    for name, mat, std in components:
-        # Two rows per component — one for Small Bore SCH, one for Large.
-        _write_component_row("Small Bore", sch_small)
-        row += 1
-        _write_component_row("Large Bore", sch_large)
-        row += 1
-    return row + 1
-
-
-def _build_flange_bolts_gasket(ws, row: int, ctx: dict) -> int:
-    fx = ctx.get("flange_extras") or {}
-    fs = ctx.get("fitting_specs") or {}
-
-    row = _section_header(ws, row, "6. FLANGE")
-    row = _write_kv(ws, row, "MOC",            fs.get("flange"), bold=True)
-    face = fx.get("face") or {}
-    row = _write_kv(ws, row, "FACE",           f"{ctx['rating']}, {face.get('code', '—')} ({face.get('label', '')})")
-    type_block = fx.get("type") or {}
-    row = _write_kv(ws, row, "Type",           type_block.get("type"))
-    row = _write_kv(ws, row, "Compact Flange", type_block.get("compact"), span=6)
-    row = _write_kv(ws, row, "Hub Connector",  type_block.get("hub"), span=6)
-    row += 1
-
-    row = _section_header(ws, row, "7. BOLTS / NUTS / GASKETS")
-    b = fx.get("bolting") or {}
-    g = fx.get("gasket") or {}
-    row = _write_kv(ws, row, "Stud Bolts",  b.get("stud"), span=6)
-    row = _write_kv(ws, row, "Hex Nuts",    b.get("hex_nut"), span=6)
-    row = _write_kv(ws, row, "Gasket",      g.get("spec"), span=6)
-    row += 1
-
-    # Valves — project codes per §5.5 nomenclature
-    # [TYPE 2ch][SUBTYPE 1ch][SEAT 1ch][class base][FACE 1ch]
-    row = _section_header(ws, row, "8. VALVES")
-    v = fx.get("valves") or {}
-    _vcode = lambda key: (v.get(key) or {}).get("code") if isinstance(v.get(key), dict) else None
-    row = _write_kv(ws, row, "Rating",     v.get("rating"),    bold=True)
-    row = _write_kv(ws, row, "Body MOC",   v.get("body"),      bold=True)
-    row = _write_kv(ws, row, "Ball",       _vcode("ball"),       span=6)
-    row = _write_kv(ws, row, "Gate",       _vcode("gate"),       span=6)
-    row = _write_kv(ws, row, "Globe",      _vcode("globe"),      span=6)
-    row = _write_kv(ws, row, "Check",      _vcode("check"),      span=6)
-    if v.get("butterfly"):
-        row = _write_kv(ws, row, "Butterfly", _vcode("butterfly"), span=6)
-    row = _write_kv(ws, row, "DBB",        _vcode("dbb"),        span=6)
-    row = _write_kv(ws, row, "DBB (Inst.)", _vcode("dbb_inst"),  span=6)
-    row += 1
-
-    row = _section_header(ws, row, "9. SPECTACLE BLIND / SPACER")
-    sp = fx.get("spectacle") or {}
-    row = _write_kv(ws, row, "MOC",                sp.get("moc"), bold=True)
-    row = _write_kv(ws, row, "Standard (Small)",   sp.get("small_bore"))
-    row = _write_kv(ws, row, "Standard (Large)",   sp.get("large_bore"))
-    row += 1
     return row
 
 
-def _build_branch_chart(ws, row: int, ctx: dict) -> int:
-    """Section 10 — Appendix-1 Branch Connection Chart for this material.
-    Renders the lower-triangular matrix (run NPS × branch NPS) with the
-    project legend below."""
-    chart = ctx.get("branch_chart")
-    if not chart or not chart.get("matrix") or not chart.get("nps_axis"):
+# ── Pipe TYPE / Ends per material (mirrors JS helpers) ─────────────
+def _ds_pipe_type(material, service):
+    if _ds_is_cuni(material):
+        return ("Seamless", "Seam Welded", False)
+    if _ds_is_copper(material):
+        return ("Seamless Hard Drawn H80 (Regular)",
+                "Seamless Light Drawn H55 (Regular)", False)
+    if _ds_is_gre(material):
+        txt = ("Manufacturer standard (BONSTRAND Series 50000C)"
+               if _ds_is_bonstrand_svc(service) else "Manufacturer standard (TBA)")
+        return (txt, txt, True)
+    if _ds_is_titanium(material):
+        return ("Seamless", "Seamless", True)
+    u = (material or "").upper()
+    if any(k in u for k in ("SS316", "TP316", "DSS", "SDSS")):
+        return ("Seamless", "Welded, 100% RT", False)
+    return ("Seamless", "LSAW, 100% RT", False)
+
+
+def _ds_pipe_ends(material, service):
+    if _ds_is_cuni(material):
+        return ("PE", "Bevel Ends", False)
+    if _ds_is_copper(material):
+        return ("BE", "BE", True)
+    if _ds_is_gre(material):
+        txt = ("Manufacturer standard (BONSTRAND Series 50000C)"
+               if _ds_is_bonstrand_svc(service)
+               else "Taper / Taper Socket x Spigot, Adhesive bonded")
+        return (txt, txt, True)
+    if _ds_is_cpvc(material):
+        return ("Socket on one end", "Socket on one end", True)
+    return ("BE", "BE", False)
+
+
+# ── 3. Pipe Data — material-aware ──────────────────────────────────
+def _ds_build_pipe_data(ws, row, ctx, total_cols):
+    material   = ctx["material"]
+    service    = ctx.get("service")
+    class_code = ctx["class_code"]
+    if _ds_is_tubing(class_code, material):
+        return _ds_build_pipe_data_tubing(ws, row, ctx, total_cols)
+
+    wt_rows = ctx["wt_rows"]
+    is_gre    = _ds_is_gre(material)
+    is_cpvc   = _ds_is_cpvc(material)
+    is_cuni   = _ds_is_cuni(material)
+    is_copper = _ds_is_copper(material)
+    is_bons   = _ds_is_bonstrand_svc(service)
+    data_cols = total_cols - 1
+
+    if is_gre:
+        code_label = ("Manufacturer's Std (BONSTRAND Series 50000C)"
+                      if is_bons else "Manufacturer's Std.")
+    elif is_cpvc:
+        code_label = "ASTM F 441"
+    else:
+        code_label = "ASME B 36.10M"
+
+    row = _ds_section_row(ws, row, "Pipe Data", total_cols)
+    row = _ds_label_value_row(ws, row, "Code", code_label, total_cols)
+
+    def _data_row(label, vals, *, align=DS_CENTER):
+        nonlocal row
+        _ds_write(ws, row, 1, label, font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+        for i in range(data_cols):
+            v = vals[i] if i < len(vals) else ""
+            _ds_write(ws, row, 2 + i, v, font=DS_FONT_VAL, align=align)
+        row += 1
+
+    sizes = [_ds_fmt_nps(r.get("nps_decimal") if r.get("nps_decimal") is not None
+                                              else r["nps"]) for r in wt_rows]
+    _data_row("Size (in)", sizes)
+
+    # O.D. row — shown for all except CPVC
+    if not is_cpvc:
+        _data_row("O.D. mm", [_ds_fmt(r["od_mm"], 1) for r in wt_rows])
+
+    if is_gre:
+        # GRE: ID + WT from the dim file (project-supplied values)
+        nps_rows = _nps_rows(material, service)
+        id_by = {r["nps_decimal"]: r.get("id_mm") for r in nps_rows}
+        wt_by = {r["nps_decimal"]: r.get("wt_mm") for r in nps_rows}
+        _data_row("I.D. mm", [_ds_fmt(id_by.get(r["nps_decimal"]), 1) for r in wt_rows])
+        _data_row("WT (mm)",  [_ds_fmt(wt_by.get(r["nps_decimal"]), 2) for r in wt_rows])
+    elif is_cpvc:
+        # CPVC: Sch from picker (project locks at 80), MOC + Ends + Fittings as labels.
+        _data_row("Sch.", [(r.get("sch") or "—") for r in wt_rows])
+        row = _ds_label_value_row(ws, row, "MOC",
+            ctx["fitting_specs"].get("pipe") or "—", total_cols, value_bold=True)
+        row = _ds_label_value_row(ws, row, "Ends", "Socket on one end", total_cols)
+        row = _ds_label_value_row(ws, row, "Fittings", "ASTM F 439", total_cols)
         return row
-    title = "10. BRANCH CONNECTION CHART"
-    sub = chart.get("title") or ""
-    if sub:
-        title = f"{title} — {sub}"
-    row = _section_header(ws, row, title)
+    elif is_cuni or is_copper:
+        # No Sch/WT rows — these materials don't use B36.10M schedules.
+        pass
+    else:
+        def _sch(r): return "—" if r.get("status") == "NOT OK" else (r.get("sch") or "—")
+        def _wt(r):
+            return _ds_fmt(r.get("calc_thk_mm"), 2) if r.get("status") == "NOT OK" else _ds_fmt(r.get("sel_thk_mm"), 2)
+        _data_row("Sch.",   [_sch(r) for r in wt_rows])
+        _data_row("WT. mm", [_wt(r)  for r in wt_rows])
 
-    axis = chart["nps_axis"]
-    matrix = chart["matrix"]
-    n = len(axis)
-
-    def _fmt_nps(v):
-        if v == 0.5:  return "1/2\""
-        if v == 0.75: return "3/4\""
-        if v == 1.5:  return "1-1/2\""
-        return f"{v}\""
-
-    # Subtitle row
-    if chart.get("subtitle"):
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=min(n + 1, 16))
-        c = ws.cell(row=row, column=1, value=chart["subtitle"])
-        c.font = FONT_NOTE
-        c.alignment = LEFT
-        row += 1
-    if chart.get("resolved_family"):
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=min(n + 1, 16))
-        c = ws.cell(row=row, column=1, value=f"For material family: {chart['resolved_family']}")
-        c.font = FONT_NOTE
-        c.alignment = LEFT
+    # TYPE / MOC / Ends — split across small/large or merged based on material.
+    ptype_sm, ptype_lg, ptype_merge = _ds_pipe_type(material, service)
+    if ptype_merge or ptype_sm == ptype_lg:
+        row = _ds_label_value_row(ws, row, "TYPE", ptype_sm, total_cols)
+    else:
+        sm_span = (data_cols + 1) // 2
+        lg_span = data_cols - sm_span
+        _ds_write(ws, row, 1, "TYPE", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+        _ds_write(ws, row, 2, ptype_sm, span=sm_span, font=DS_FONT_VAL, align=DS_CENTER)
+        _ds_write(ws, row, 2 + sm_span, ptype_lg, span=lg_span, font=DS_FONT_VAL, align=DS_CENTER)
         row += 1
 
-    # Header row — corner cell + branch NPS axis
-    corner = ws.cell(row=row, column=1, value="RUN ↓ / BRANCH →")
-    corner.font = FONT_HEADER
-    corner.fill = FILL_HEADER
-    corner.alignment = CENTER
-    corner.border = BORDER_HEAD
-    for i, v in enumerate(axis):
-        c = ws.cell(row=row, column=2 + i, value=_fmt_nps(v))
-        c.font = FONT_LABEL
-        c.fill = FILL_GRAY
-        c.alignment = CENTER
-        c.border = BORDER_ALL
-    row += 1
+    # MOC
+    if is_gre or is_cuni or is_copper:
+        moc = ("Manufacturer standard (BONSTRAND Series 50000C)"
+               if (is_gre and is_bons)
+               else (ctx["fitting_specs"].get("pipe") or "—"))
+        row = _ds_label_value_row(ws, row, "MOC", moc, total_cols, value_bold=True)
+    else:
+        pipe = ctx["fitting_specs"].get("pipe") or "—"
+        mat_u = (material or "").upper()
+        is_plain_cs = re.fullmatch(r"\s*CS\s*(NACE)?\s*", mat_u) and not _ds_is_galv(material)
+        if is_plain_cs:
+            sm_span = (data_cols + 1) // 2
+            lg_span = data_cols - sm_span
+            _ds_write(ws, row, 1, "MOC", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+            _ds_write(ws, row, 2, pipe, span=sm_span, font=DS_FONT_VAL_B, align=DS_CENTER)
+            _ds_write(ws, row, 2 + sm_span, "API 5L Gr. B", span=lg_span,
+                      font=DS_FONT_VAL_B, align=DS_CENTER)
+            row += 1
+        else:
+            row = _ds_label_value_row(ws, row, "MOC", pipe, total_cols, value_bold=True)
 
-    # Body rows
-    for ridx, mrow in enumerate(matrix):
-        # Run NPS label
-        rc = ws.cell(row=row, column=1, value=_fmt_nps(axis[ridx]))
-        rc.font = FONT_LABEL
-        rc.fill = FILL_GRAY
-        rc.alignment = CENTER
-        rc.border = BORDER_ALL
-        for cidx in range(n):
-            cell = ws.cell(row=row, column=2 + cidx)
-            if cidx < len(mrow):
-                code = mrow[cidx]
-                cell.value = code
-                cell.font = FONT_VALUE_BOLD
-                cell.alignment = CENTER
-                cell.border = BORDER_ALL
-                # Color cells by code
-                if code == "T":
-                    cell.fill = PatternFill("solid", fgColor="FFDBEAFE")
-                elif code == "RT":
-                    cell.fill = PatternFill("solid", fgColor="FFBFDBFE")
-                elif code == "W":
-                    cell.fill = PatternFill("solid", fgColor="FFFEF3C7")
-                elif code == "S":
-                    cell.fill = PatternFill("solid", fgColor="FFDCFCE7")
-                elif code == "H":
-                    cell.fill = PatternFill("solid", fgColor="FFFCE7F3")
-                elif code == "-":
-                    cell.fill = FILL_GRAY
+    # Ends
+    ends_sm, ends_lg, ends_merge = _ds_pipe_ends(material, service)
+    if ends_merge or ends_sm == ends_lg:
+        row = _ds_label_value_row(ws, row, "Ends", ends_sm, total_cols)
+    else:
+        sm_span = (data_cols + 1) // 2
+        lg_span = data_cols - sm_span
+        _ds_write(ws, row, 1, "Ends", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+        _ds_write(ws, row, 2, ends_sm, span=sm_span, font=DS_FONT_VAL, align=DS_CENTER)
+        _ds_write(ws, row, 2 + sm_span, ends_lg, span=lg_span, font=DS_FONT_VAL, align=DS_CENTER)
         row += 1
 
-    # Legend
-    row += 1
-    ws.cell(row=row, column=1, value="LEGEND:").font = FONT_LABEL
-    for i, (code, label) in enumerate(chart.get("legend", {}).items()):
-        col = 2 + i * 2
-        ws.cell(row=row, column=col, value=code).font = FONT_VALUE_BOLD
-        ws.cell(row=row, column=col + 1, value=label).font = FONT_VALUE
-    row += 2
     return row
 
 
-def _build_footer(ws, row: int, ctx: dict) -> int:
-    row = _section_header(ws, row, "11. NOTES")
-    notes = [
-        "Calculated wall thickness per ASME B31.3 Eq. 3a; mill tolerance 12.5%.",
-        "Schedule selection per ASME B36.10M §9 (or B36.19M for stainless) — lightest WT ≥ Calc Thk.",
-        "Hydrotest per ASME B31.3 §345.4.2(a) — 1.5 × maximum rated pressure.",
-        "Valve descriptions follow ASME conventions (body MOC + seat + bore + face); engineer maps to project valve catalog when ordering.",
-        "Reviewer to verify NACE / LTCS / PWHT requirements per material and service.",
-    ]
-    for n in notes:
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
-        c = ws.cell(row=row, column=1, value="• " + n)
-        c.font = FONT_VALUE
-        c.alignment = LEFT
-        c.border = BORDER_ALL
+def _ds_build_pipe_data_tubing(ws, row, ctx, total_cols):
+    nps_rows = _nps_rows(ctx["material"], ctx.get("service"))
+    data_cols = total_cols - 1
+    if re.search(r"6\s*MO", ctx["material"], re.I):
+        pipe_moc = "ASTM A269 (UNS S31254) SML, Annealed, Hardness <= 90 HRB SML"
+    else:
+        pipe_moc = "ASTM A269 Type 316/316L SML, Annealed, Hardness <= 90 HRB SML"
+
+    row = _ds_section_row(ws, row, "Pipe Data", total_cols)
+    row = _ds_label_value_row(ws, row, "Code", "ASTM A 269", total_cols)
+
+    def _data_row(label, vals):
+        nonlocal row
+        _ds_write(ws, row, 1, label, font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+        for i in range(data_cols):
+            v = vals[i] if i < len(vals) else ""
+            _ds_write(ws, row, 2 + i, v, font=DS_FONT_VAL, align=DS_CENTER)
         row += 1
-    return row + 1
+
+    _data_row("Size (in)",  [_ds_fmt_nps(r["nps_decimal"]) for r in nps_rows])
+    _data_row("Sch. (Thk)", [_ds_fmt(r.get("wt_mm"), 3)    for r in nps_rows])
+    row = _ds_label_value_row(ws, row, "MOC",      pipe_moc, total_cols, value_bold=True)
+    row = _ds_label_value_row(ws, row, "Ends",     "PE", total_cols)
+    row = _ds_label_value_row(ws, row, "Fittings", "According to manufacturer standard", total_cols)
+    return row
+
+
+def _ds_build_fittings_tubing(ws, row, ctx, total_cols):
+    nps_rows = _nps_rows(ctx["material"], ctx.get("service"))
+    data_cols = total_cols - 1
+    row = _ds_section_row(ws, row, "Fittings Data", total_cols)
+    _ds_write(ws, row, 1, "Size (in)", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+    for i in range(data_cols):
+        v = _ds_fmt_nps(nps_rows[i]["nps_decimal"]) if i < len(nps_rows) else ""
+        _ds_write(ws, row, 2 + i, v, font=DS_FONT_VAL, align=DS_CENTER)
+    row += 1
+    row = _ds_label_value_row(ws, row, "TYPE", "Compression Fitting", total_cols)
+    row = _ds_label_value_row(ws, row, "MOC",
+        "Compression fitting with double ferrule, body AISI 316, ferrules and nuts in AISI 316",
+        total_cols, value_bold=True)
+    row = _ds_label_value_row(ws, row, "Ends",
+        "OD X THD, OD X OD, & OD X SW (Manufacturer Standard)", total_cols)
+    return row
+
+
+# ── 4. Fittings Data — material-aware ─────────────────────────────
+def _ds_build_fittings(ws, row, ctx, total_cols):
+    material   = ctx["material"]
+    service    = ctx.get("service")
+    class_code = ctx["class_code"]
+    if _ds_is_tubing(class_code, material):
+        return _ds_build_fittings_tubing(ws, row, ctx, total_cols)
+
+    fs = ctx["fitting_specs"]
+    fittings_moc = fs.get("fittings") or "—"
+    flange_moc   = fs.get("flange") or "—"
+    branch_moc   = fs.get("branch_outlet") or "—"
+
+    is_cpvc   = _ds_is_cpvc(material)
+    is_gre    = _ds_is_gre(material)
+    is_copper = _ds_is_copper(material)
+    is_cuni   = _ds_is_cuni(material)
+    is_galv   = _ds_is_galv(material)
+    is_ti     = _ds_is_titanium(material)
+    is_bons   = _ds_is_bonstrand_svc(service)
+
+    row = _ds_section_row(ws, row, "Fittings Data", total_cols)
+
+    if is_cpvc:
+        row = _ds_label_value_row(ws, row, "TYPE", "Socket Type", total_cols)
+        row = _ds_label_value_row(ws, row, "MOC",  fittings_moc, total_cols, value_bold=True)
+        for name in ("Elbow", "Tee", "Red.", "Cap", "Coupl."):
+            row = _ds_label_value_row(ws, row, name, fittings_moc, total_cols)
+        row = _ds_label_value_row(ws, row, "Union", "ASTM F 437", total_cols)
+        row = _ds_label_value_row(ws, row, "TYPE",
+            "Manufacturer Standard, Threaded (ASME B 1.20.1)", total_cols)
+        row = _ds_label_value_row(ws, row, "MOC",
+            f"{fittings_moc}; O-ring material : EPDM", total_cols)
+        return row
+
+    if is_gre:
+        moc = ("Manufacturer standard (BONSTRAND Series 50000C)"
+               if is_bons else fittings_moc)
+        type_txt = ("Manufacturer standard (BONSTRAND Series 50000C)"
+                    if is_bons
+                    else "Taper / Taper Socket x Spigot, Adhesive bonded")
+        row = _ds_label_value_row(ws, row, "TYPE", type_txt, total_cols)
+        row = _ds_label_value_row(ws, row, "Rating",
+            "Manufacturer standard (BONSTRAND Series 50000C)" if is_bons else "20 bar, 93degC",
+            total_cols)
+        row = _ds_label_value_row(ws, row, "MOC", moc, total_cols, value_bold=True)
+        gre_rows = [
+            ("Elbow",    "22.5°, 45°, 90° elbow"),
+            ("Tee",      "Tee or Reducing Tee"),
+            ("Mold. Tee","Molded Tee"),
+            ("Red. Sad", "Reducing Saddle - Flat Face (FF)"),
+            ("Reducer",  "Conc and Ecc Reducer"),
+            ("Coupler",  "Coupler"),
+            ("Adaptor",  "Adapter"),
+        ]
+        for name, gen in gre_rows:
+            row = _ds_label_value_row(ws, row, name, (moc if is_bons else gen), total_cols)
+        return row
+
+    if is_ti:
+        row = _ds_label_value_row(ws, row, "TYPE",
+            "Butt Weld (SCH to match pipe), Seamless", total_cols)
+        row = _ds_label_value_row(ws, row, "MOC", fittings_moc, total_cols, value_bold=True)
+        ti_rows = [
+            ("Elbow",      "ASME B 16.9 and ASME B 16.28 for short radius elbow and returns"),
+            ("Tee",        "ASME B 16.9"),
+            ("Red.",       "ASME B 16.9"),
+            ("Cap",        "ASME B 16.9"),
+            ("Plug",       "Hex Head Plug, ASME B 16.11"),
+            ("Elbolet",    "MSS SP 97"),
+            ("Weldolet",   "MSS SP 97"),
+            ("Nipoflange", "ASTM B 363 Gr. WPT 2 (Ref. Section 1.24)"),
+            ("Nipple",     "ASME B 36.10M, MOC Same as pipe"),
+        ]
+        for name, std in ti_rows:
+            row = _ds_label_value_row(ws, row, name, std, total_cols)
+        return row
+
+    if is_copper:
+        data_cols = total_cols - 1
+        sm_span = (data_cols + 1) // 2
+        lg_span = data_cols - sm_span
+        # TYPE
+        _ds_write(ws, row, 1, "TYPE", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+        _ds_write(ws, row, 2, "Brazed Fittings (SCH to match pipe), Seamless",
+                  span=sm_span, font=DS_FONT_VAL, align=DS_CENTER)
+        _ds_write(ws, row, 2 + sm_span, "Butt Weld (SCH to match pipe), Seamless",
+                  span=lg_span, font=DS_FONT_VAL, align=DS_CENTER)
+        row += 1
+        # MOC + 11 component rows (MOC values vertically merged across them)
+        copper_components = ["Elbow", "Tee", "Red.", "Cap", "Coupl.", "Plug",
+                             "Union", "Sockolet", "Weldolet", "Nipple", "Swage"]
+        moc_start = row
+        moc_end   = row + len(copper_components)
+        _ds_write(ws, row, 1, "MOC", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+        _ds_write(ws, row, 2, "ASTM B 124 UNS C11000",
+                  span=sm_span, font=DS_FONT_VAL_B, align=DS_CENTER)
+        _ds_write(ws, row, 2 + sm_span, "ASTM B 42 UNS C12200",
+                  span=lg_span, font=DS_FONT_VAL_B, align=DS_CENTER)
+        try:
+            ws.merge_cells(start_row=moc_start, start_column=2,
+                           end_row=moc_end, end_column=1 + sm_span)
+            ws.merge_cells(start_row=moc_start, start_column=2 + sm_span,
+                           end_row=moc_end, end_column=total_cols)
+        except Exception:
+            pass
+        row += 1
+        for name in copper_components:
+            _ds_write(ws, row, 1, name, font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+            for c in range(2, total_cols + 1):
+                _ds_style(ws.cell(row=row, column=c), border=True)
+            row += 1
+        return row
+
+    if is_cuni:
+        row = _ds_label_value_row(ws, row, "TYPE", "SW", total_cols)
+        row = _ds_label_value_row(ws, row, "MOC", "90-10 Cu-Ni", total_cols, value_bold=True)
+        cuni_rows = [
+            ("Elbow",    "EEMUA 234"),
+            ("Tee",      "EEMUA 234"),
+            ("Red.",     "EEMUA 234"),
+            ("Cap",      "EEMUA 234"),
+            ("Coupl.",   "EEMUA 234"),
+            ("Plug",     "EEMUA 234"),
+            ("Union",    "EEMUA 234"),
+            ("Sockolet", "EEMUA 234"),
+            ("Weldolet", "EEMUA 234"),
+            ("Nipple",   "EEMUA 234, MOC same as pipe"),
+            ("Swage",    "EEMUA 234, MOC same as pipe"),
+        ]
+        for name, std in cuni_rows:
+            row = _ds_label_value_row(ws, row, name, std, total_cols)
+        return row
+
+    # Standard / Galv / NACE / SS / DSS — two-bore split
+    if is_galv:
+        sm_type = "Screwed (SCRD), #3000"
+        lg_type = "Butt Weld (SCH to match pipe), Seamless"
+        sm_moc  = flange_moc
+        lg_moc  = fittings_moc
+        comp_rows = [
+            ("Elbow",        "ASME B 16.11", "ASME B 16.9"),
+            ("Tee",          "ASME B 16.11", "ASME B 16.9"),
+            ("Red.",         "ASME B 16.11", "ASME B 16.9"),
+            ("Cap",          "ASME B 16.11", "ASME B 16.9"),
+            ("Coupl.",       "ASME B 16.11", ""),
+            ("Hex Hd. Plug", "Hex Head Plug, ASME B 16.11", ""),
+            ("Union",        "ASME B 16.11", "BS 3799"),
+            ("Olet",         "MSS SP-97",    branch_moc),
+            ("Swage",        "MSS SP-95, MOC same as pipe", None),
+        ]
+    else:
+        sm_type = "Butt Weld (SCH to match pipe), Seamless"
+        lg_type = "Butt Weld (SCH to match pipe), Welded"
+        sm_moc  = fittings_moc
+        lg_moc  = fittings_moc
+        comp_rows = [
+            ("Elbow",        "ASME B 16.9",  "ASME B 16.9"),
+            ("Tee",          "ASME B 16.9",  "ASME B 16.9"),
+            ("Red.",         "ASME B 16.9",  "ASME B 16.9"),
+            ("Cap",          "ASME B 16.9",  "ASME B 16.9"),
+            ("Hex Hd. Plug", "Hex Head Plug, ASME B 16.11", ""),
+            ("Weldolet",     branch_moc,     branch_moc),
+        ]
+
+    data_cols = total_cols - 1
+    sm_span = (data_cols + 1) // 2
+    lg_span = data_cols - sm_span
+
+    _ds_write(ws, row, 1, "TYPE", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+    _ds_write(ws, row, 2, sm_type, span=sm_span, font=DS_FONT_VAL, align=DS_CENTER)
+    _ds_write(ws, row, 2 + sm_span, lg_type, span=lg_span, font=DS_FONT_VAL, align=DS_CENTER)
+    row += 1
+
+    _ds_write(ws, row, 1, "MOC", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+    _ds_write(ws, row, 2, sm_moc, span=sm_span, font=DS_FONT_VAL_B, align=DS_CENTER)
+    _ds_write(ws, row, 2 + sm_span, lg_moc, span=lg_span, font=DS_FONT_VAL_B, align=DS_CENTER)
+    row += 1
+
+    for entry in comp_rows:
+        name = entry[0]
+        sm   = entry[1]
+        lg   = entry[2] if len(entry) > 2 else ""
+        _ds_write(ws, row, 1, name, font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+        if lg is None:
+            _ds_write(ws, row, 2, sm, span=data_cols, font=DS_FONT_VAL, align=DS_CENTER)
+        else:
+            _ds_write(ws, row, 2, sm or "—", span=sm_span, font=DS_FONT_VAL, align=DS_CENTER)
+            _ds_write(ws, row, 2 + sm_span, lg or "—", span=lg_span, font=DS_FONT_VAL, align=DS_CENTER)
+        row += 1
+    return row
+
+
+# ── 5. Flange + Blind Flange ───────────────────────────────────────
+def _ds_build_flange(ws, row, ctx, total_cols):
+    material = ctx["material"]
+    service  = ctx.get("service")
+    class_code = ctx["class_code"]
+    if _ds_is_tubing(class_code, material):
+        return row
+
+    fs = ctx["fitting_specs"]
+    fx = ctx["flange_extras"]
+    flange_moc = fs.get("flange") or "—"
+    rating_str = ctx["rating"]
+    face_code  = (fx.get("face") or {}).get("code", "RF")
+    face_full  = f"{rating_str} {face_code}, Serrated Finish"
+
+    section_title = "Flange"
+    if _ds_is_cpvc(material):
+        section_title = "Flange (F 439, Bolt hole as per ASME B 16.5)"
+    row = _ds_section_row(ws, row, section_title, total_cols)
+
+    # TYPE — material-aware
+    if _ds_is_titanium(material):
+        ftype_sm = ftype_lg = "Lap Joint Flange (Note 4) / WN Flange RF"; merged = True
+    elif _ds_is_cuni(material):
+        ftype_sm, ftype_lg, merged = "SW Flange", "WN Flange", False
+    elif _ds_is_copper(material):
+        ftype_sm = ftype_lg = "Solid slip on flange"; merged = True
+    elif _ds_is_cpvc(material):
+        ftype_sm = ftype_lg = "#150 Socket Type/ Manufacturer Standard"; merged = True
+    elif _ds_is_gre(material):
+        ftype_sm = ftype_lg = ("Manufacturer standard (BONSTRAND Series 50000C)"
+                                if _ds_is_bonstrand_svc(service)
+                                else "Taper / Taper Socket x Spigot, Adhesive bonded")
+        merged = True
+    elif _ds_is_galv(material):
+        ftype_sm, ftype_lg, merged = "Screwed (SCRD)", "WN", False
+    else:
+        ftype_sm, ftype_lg, merged = "WN", "WN", False
+
+    data_cols = total_cols - 1
+    if merged:
+        row = _ds_label_value_row(ws, row, "TYPE", ftype_sm, total_cols)
+    else:
+        sm_span = (data_cols + 1) // 2
+        lg_span = data_cols - sm_span
+        _ds_write(ws, row, 1, "TYPE", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+        _ds_write(ws, row, 2, ftype_sm, span=sm_span, font=DS_FONT_VAL, align=DS_CENTER)
+        _ds_write(ws, row, 2 + sm_span, ftype_lg, span=lg_span, font=DS_FONT_VAL, align=DS_CENTER)
+        row += 1
+
+    # MOC / FACE / STD per material
+    if _ds_is_titanium(material):
+        moc = "LJ=Inner Flange-B 363 WPT2, Outer Flange ASTM A 105N, Epoxy coated and WN= B 381 Gr. F2"
+        std = "ASME B 16.5, Butt Welding ends as per ASME B 16.25"
+        show_face = False
+    elif _ds_is_cuni(material):
+        moc, std, show_face = "90-10Cu-Ni", "EEMUA 234 20 BAR", False
+    elif _ds_is_copper(material):
+        moc, std, show_face = "ASTM B61 UNS C92200", "ASME B 16.24", True
+        face_full = "FF"
+    elif _ds_is_cpvc(material):
+        moc, std, show_face = flange_moc, None, True
+        face_full = "FF STOCK FINISH (1000 micro inch AARH)"
+    elif _ds_is_gre(material):
+        is_bons = _ds_is_bonstrand_svc(service)
+        moc = "Manufacturer standard (BONSTRAND Series 50000C)" if is_bons else flange_moc
+        std = "Drilled to ASME B 16.5, 150#" if is_bons else "Drilled to ASME B 16.5 / 16.47A, 150#"
+        show_face = True
+        face_full = ("Manufacturer standard (BONSTRAND Series 50000C)"
+                     if is_bons else "Flat Face (FF)")
+    else:
+        moc, std, show_face = flange_moc, "ASME B 16.5", True
+
+    row = _ds_label_value_row(ws, row, "MOC", moc, total_cols, value_bold=True)
+    if show_face:
+        row = _ds_label_value_row(ws, row, "FACE", face_full, total_cols)
+    if std:
+        row = _ds_label_value_row(ws, row, "STD", std, total_cols)
+    return row
+
+
+def _ds_build_blind_flange(ws, row, ctx, total_cols):
+    material = ctx["material"]
+    if _ds_is_tubing(ctx["class_code"], material):
+        return row
+    blind_moc = blind_type = blind_face = None
+    if _ds_is_cuni(material):
+        blind_moc = "ASTM A 105N FF with 3mm 90-10 CuNi weld deposit"
+    elif _ds_is_copper(material):
+        blind_moc = "ASTM A 105N RF With 3mm Copper over lay"
+    elif _ds_is_cpvc(material):
+        blind_type = "#150 / Manufacturer Standard"
+        blind_moc  = ctx["fitting_specs"].get("flange") or "—"
+        blind_face = "FF STOCK FINISH (1000 micro inch AARH)"
+    elif _ds_is_titanium(material):
+        blind_moc = "ASTM B 381 Gr. F 2 as per ASME B 16.5"
+    if not blind_moc:
+        return row
+    row = _ds_section_row(ws, row, "Blind Flange", total_cols)
+    if blind_type:
+        row = _ds_label_value_row(ws, row, "TYPE", blind_type, total_cols)
+    row = _ds_label_value_row(ws, row, "MOC", blind_moc, total_cols)
+    if blind_face:
+        row = _ds_label_value_row(ws, row, "FACE", blind_face, total_cols)
+    return row
+
+
+# ── 6. Spectacle Blind / Spade and Spacer ─────────────────────────
+def _ds_build_spectacle(ws, row, ctx, total_cols):
+    material = ctx["material"]
+    if _ds_is_tubing(ctx["class_code"], material):
+        return row
+    if _ds_is_gre(material):
+        row = _ds_section_row(ws, row, "Spade and Spacer", total_cols)
+        row = _ds_label_value_row(ws, row, "TYPE",
+            "Manufacturer standard, Flat Face (FF)", total_cols)
+        return row
+    if _ds_is_copper(material) or _ds_is_cpvc(material) or _ds_is_titanium(material):
+        return row
+    sp = ctx["flange_extras"].get("spectacle") or {}
+    row = _ds_section_row(ws, row, "Spectacle Blind/Spacer Blinds", total_cols)
+    row = _ds_label_value_row(ws, row, "MOC",
+        sp.get("moc") or ctx["fitting_specs"].get("flange") or "—",
+        total_cols, value_bold=True)
+    data_cols = total_cols - 1
+    sm_span = (data_cols + 1) // 2
+    lg_span = data_cols - sm_span
+    _ds_write(ws, row, 1, "Spectacle", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+    _ds_write(ws, row, 2, sp.get("small_bore") or "—",
+              span=sm_span, font=DS_FONT_VAL, align=DS_CENTER)
+    _ds_write(ws, row, 2 + sm_span, sp.get("large_bore") or "—",
+              span=lg_span, font=DS_FONT_VAL, align=DS_CENTER)
+    row += 1
+    return row
+
+
+# ── 7. Bolts/Nuts/Gaskets (Mechanical Joints) ──────────────────────
+def _ds_build_bolts_gaskets(ws, row, ctx, total_cols):
+    material = ctx["material"]
+    if _ds_is_tubing(ctx["class_code"], material):
+        return row
+    fx = ctx["flange_extras"]
+    bolting = fx.get("bolting") or {}
+    gasket  = fx.get("gasket") or {}
+    title = ("Mechanical Joints"
+             if (_ds_is_copper(material) or _ds_is_cpvc(material))
+             else "Bolts/ Nuts/ Gaskets")
+    row = _ds_section_row(ws, row, title, total_cols)
+    row = _ds_label_value_row(ws, row, "Stud Bolts", bolting.get("stud") or "—", total_cols)
+    row = _ds_label_value_row(ws, row, "Hex Nuts",   bolting.get("hex_nut") or "—", total_cols)
+    if _ds_is_gre(material):
+        row = _ds_label_value_row(ws, row, "Washers", "ASTM A 307 Gr. B HDG", total_cols)
+    specs = gasket.get("specs") or [gasket.get("spec") or "—"]
+    for g in specs:
+        row = _ds_label_value_row(ws, row, "Gasket", g, total_cols)
+    return row
+
+
+# ── 8. Valves ──────────────────────────────────────────────────────
+def _ds_build_valves(ws, row, ctx, total_cols):
+    material = ctx["material"]
+    service  = ctx.get("service")
+    fx = ctx["flange_extras"]
+    v  = fx.get("valves") or {}
+    is_tubing = _ds_is_tubing(ctx["class_code"], material)
+    if _ds_is_gre(material) and _ds_is_bonstrand_svc(service):
+        return row  # A51 hides Valves
+
+    row = _ds_section_row(ws, row, "Valves", total_cols)
+
+    def _vrow(label, code_key):
+        nonlocal row
+        item = v.get(code_key) or {}
+        code = item.get("code", "—") if isinstance(item, dict) else "—"
+        _ds_write(ws, row, 1, label, font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+        _ds_write(ws, row, 2, code, span=total_cols - 1, font=DS_FONT_CODE, align=DS_CENTER)
+        row += 1
+
+    _ds_write(ws, row, 1, "Rating", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+    _ds_write(ws, row, 2, v.get("rating") or "—",
+              span=total_cols - 1, font=DS_FONT_VAL, align=DS_CENTER)
+    row += 1
+
+    if is_tubing:
+        _vrow("DBB (Inst)",    "dbb_inst")
+        _vrow("Needle (Inst)", "needle")
+        _vrow("Ball (Inst)",   "ball")
+        _vrow("Check (Inst)",  "check")
+    else:
+        _vrow("Ball",   "ball")
+        _vrow("Gate",   "gate")
+        _vrow("Globe",  "globe")
+        _vrow("Check",  "check")
+        if v.get("butterfly"): _vrow("Butterfly", "butterfly")
+        if v.get("dbb"):       _vrow("DBB",        "dbb")
+        if v.get("dbb_inst"):  _vrow("DBB (Inst.)", "dbb_inst")
+        if v.get("needle"):    _vrow("Needle",     "needle")
+    return row
+
+
+# ── 9. Notes ──────────────────────────────────────────────────────
+_DS_NOTES = [
+    "PMS to be read in conjunction with Project Piping Design Basis, and Valve Material Specification.",
+    "Weld Joint Factor for welded pipe shall be as per ASME B 31.3.",
+    "Welded fittings shall be 100% radiographed.",
+    "Spectacle blinds and spacer sizes and rating that are not available in ASME B 16.48 shall be as per manuf. standard. Design shall be submitted to Company for review and approval.",
+    "Maximum temperature limit for all Soft Seat Ball Valve shall be 250°C.",
+    "Wafer check valve to be avoided, unless the available space constraint does not allow normal check valve.",
+    "Wafer type Butterfly Valve may be used only in water service and shall not be used in hydrocarbon service.",
+    "Two jackscrew, 180 degree apart shall be provided in one of the flanges for all orifice flange and specified spectacle blind assemblies.",
+]
+
+
+def _ds_build_notes(ws, row, ctx, total_cols):
+    row = _ds_section_row(ws, row, "NOTES", total_cols)
+    for i, note in enumerate(_DS_NOTES, start=1):
+        _ds_write(ws, row, 1, str(i),
+                  font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_CENTER)
+        _ds_write(ws, row, 2, note, span=total_cols - 1,
+                  font=DS_FONT_VAL, align=DS_LEFT)
+        row += 1
+    return row
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Public — orchestrate one resolve + return xlsx bytes
+# Public entry — Datasheet-style workbook
 # ──────────────────────────────────────────────────────────────────────
 def build_workbook(
     *,
@@ -614,10 +1092,9 @@ def build_workbook(
     mdmt_c: float,
     joint_type: str,
 ) -> tuple[io.BytesIO, str]:
-    """Resolve the class, compute everything the UI shows, lay it out in
-    an .xlsx workbook, and return (BytesIO, suggested_filename)."""
+    """Resolve the class and produce a Datasheet-style xlsx that mirrors
+    the on-screen Excel View (Tab 6)."""
 
-    # ---- Resolve ----------------------------------------------------------
     resolved = class_resolver.resolve(
         rating=rating, material=material, ca=ca, service=service,
     )
@@ -627,31 +1104,26 @@ def build_workbook(
     fs         = cf.get("fitting_specs") or {}
     fx         = cf.get("flange_extras") or {}
 
-    # ---- Code factor lookups at design temperature -----------------------
+    # Wall-thickness compute (drives Pipe Data SCH / WT cells).
     cold_t_c = (pt.get("temperatures_c") or [38.0])[0]
     s_table   = (cf.get("stress_table") or {}).get("stress_psi_by_temp_c") or {}
     S1_psi    = _interp(s_table, cold_t_c)   if s_table else None
     S2_psi    = _interp(s_table, design_t_c) if s_table else None
-
     y_curve   = cf.get("y_curve") or {}
     y_temps_c = y_curve.get("temperatures_c") or []
     y_vals    = y_curve.get("y_values") or []
     y_by_temp = {str(t): v for t, v in zip(y_temps_c, y_vals) if v is not None}
     Y = _interp(y_by_temp, design_t_c) if y_by_temp else 0.4
     Y = round(Y, 2)
-
     W = 1.0 if design_t_c <= 510 else float("nan")
     E = _joint_eff(joint_type)
     C_mm = _parse_ca_mm(ca)
     mill_tol = 0.125
 
-    # ---- Wall thickness rows ---------------------------------------------
     nps_list = _nps_rows(material, service)
     b3610 = _b3610_rows()
     use_ss = _uses_stainless(material)
     b3619 = _b3619_rows() if use_ss else {}
-    # Primary table for the picker; fallback only applies to stainless
-    # (B36.19M tops out at 80S — fall back to B36.10M for heavier walls).
     sched_table_primary  = b3619 if use_ss else b3610
     sched_table_fallback = b3610 if use_ss else None
 
@@ -662,7 +1134,6 @@ def build_workbook(
         if S is None or P is None or not math.isfinite(W):
             return None
         return P / (2 * (S * E * W + P * Y))
-
     tD1, tD2 = tD(P1_psi, S1_psi), tD(P2_psi, S2_psi)
     candidates = [v for v in (tD1, tD2) if v is not None]
     tDmax = max(candidates) if candidates else None
@@ -675,89 +1146,70 @@ def build_workbook(
         valid = (t_mm < d_over_6) if t_mm is not None else None
         tm = t_mm + C_mm if t_mm is not None else None
         calc_thk = tm / (1 - mill_tol) if tm is not None else None
-        # Project-mandated override (e.g. Titanium A70) — the NPS dim file
-        # carries explicit `sch` + `wt_mm` per NPS. Use those directly.
         if r.get("sch") is not None and r.get("wt_mm") is not None:
             pick = {"sch": str(r["sch"]), "wt_mm": r["wt_mm"], "status": "OK", "fallback": False}
         else:
-            pick = _pick_schedule(sched_table_primary, r["nps_decimal"], calc_thk, sched_table_fallback) if calc_thk is not None else None
+            pick = (_pick_schedule(sched_table_primary, r["nps_decimal"],
+                                   calc_thk, sched_table_fallback)
+                    if calc_thk is not None else None)
         wt_rows.append({
-            "nps": r["nps"], "od_mm": D, "t_mm": t_mm, "d_over_6": d_over_6,
-            "validity": "OK" if valid else ("ALERT" if valid is False else None),
-            "tm_mm": tm, "calc_thk_mm": calc_thk,
-            "sch": pick["sch"] if pick else None,
-            "sel_thk_mm": pick["wt_mm"] if pick else None,
-            "status": pick["status"] if pick else None,
+            "nps":         r["nps"],
+            "nps_decimal": r["nps_decimal"],
+            "od_mm":       D,
+            "t_mm":        t_mm,
+            "d_over_6":    d_over_6,
+            "validity":    "OK" if valid else ("ALERT" if valid is False else None),
+            "tm_mm":       tm,
+            "calc_thk_mm": calc_thk,
+            "sch":         pick["sch"] if pick else None,
+            "sel_thk_mm":  pick["wt_mm"] if pick else None,
+            "status":      pick["status"] if pick else None,
         })
 
-    # ---- Bore schedules (mode across each range) --------------------------
-    def _mode(rs):
-        c: dict[str, int] = {}
-        for x in rs:
-            if x:
-                c[x] = c.get(x, 0) + 1
-        return max(c.items(), key=lambda kv: kv[1])[0] if c else "—"
+    # Total columns — driven by NPS axis length + label column.
+    nps_count   = max(len(wt_rows), 7)
+    total_cols  = max(nps_count + 1, 12)
 
-    # Mode ignores NOT OK rows — they don't represent a standard schedule;
-    # the engineer specs a custom wall ≥ calc thk on those NPS sizes.
-    small_sch = _mode([r["sch"] for r in wt_rows
-                       if r["nps"] and float(r["nps"]) <= 2.0 and r.get("status") == "OK"])
-    large_sch = _mode([r["sch"] for r in wt_rows
-                       if r["nps"] and float(r["nps"]) >= 2.5 and r.get("status") == "OK"])
-
-    # ---- Hydrotest --------------------------------------------------------
-    p_envelope = pt.get("pressures_barg") or []
-    hydro_barg = (max(p_envelope) * 1.5) if p_envelope else (design_p_barg * 1.5)
-
-    # ---- Workbook ---------------------------------------------------------
     wb = Workbook()
     ws = wb.active
     ws.title = f"PMS-{class_code}"
 
-    # Column widths roughly match the screen layout (col A wider for labels).
-    widths = [28, 22, 16, 16, 16, 16, 16]
-    for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-    # Branch chart can extend to column ~18 — give those compact widths.
-    for i in range(8, 20):
-        ws.column_dimensions[get_column_letter(i)].width = 8
+    ws.column_dimensions[get_column_letter(1)].width = 22
+    for i in range(2, total_cols + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 10
 
     ctx = {
-        "class_code":   class_code,
-        "rating":       rating,
-        "material":     material,
-        "ca":           ca,
-        "service":      service or "—",
-        "design_p":     design_p_barg,
-        "design_t":     design_t_c,
-        "mdmt":         mdmt_c,
-        "joint_type":   joint_type,
-        "E": E, "Y": Y,
-        "W": 1.0 if math.isfinite(W) else "—",
-        "fitting_pipe":   fs.get("pipe"),
-        "fitting_specs":  fs,
-        "flange_extras":  fx,
-        "branch_chart":   cf.get("branch_chart"),
-        "pt":             pt,
-        "wt_rows":        wt_rows,
-        "small_bore_sch": small_sch,
-        "large_bore_sch": large_sch,
-        "hydro_barg":     hydro_barg,
+        "class_code":    class_code,
+        "rating":        rating,
+        "material":      material,
+        "ca":            ca,
+        "service":       (service or "").strip() or "—",
+        "design_p":      design_p_barg,
+        "design_t":      design_t_c,
+        "mdmt":          mdmt_c,
+        "joint_type":    joint_type,
+        "fitting_specs": fs,
+        "flange_extras": fx,
+        "branch_chart":  cf.get("branch_chart"),
+        "pt":            pt,
+        "wt_rows":       wt_rows,
+        "rev":           "A0",
     }
 
     row = 1
-    row = _build_identification(ws, row, ctx)
-    row = _build_design_conditions(ws, row, ctx)
-    row = _build_pt_table(ws, row, ctx)
-    row = _build_wall_thickness_table(ws, row, ctx)
-    row = _build_pipe_and_fittings(ws, row, ctx)
-    row = _build_flange_bolts_gasket(ws, row, ctx)
-    row = _build_branch_chart(ws, row, ctx)
-    row = _build_footer(ws, row, ctx)
+    row = _ds_build_header(ws, row, ctx, total_cols)
+    row = _ds_build_pt(ws, row, ctx, total_cols)
+    row = _ds_build_pipe_data(ws, row, ctx, total_cols)
+    row = _ds_build_fittings(ws, row, ctx, total_cols)
+    row = _ds_build_flange(ws, row, ctx, total_cols)
+    row = _ds_build_blind_flange(ws, row, ctx, total_cols)
+    row = _ds_build_spectacle(ws, row, ctx, total_cols)
+    row = _ds_build_bolts_gaskets(ws, row, ctx, total_cols)
+    row = _ds_build_valves(ws, row, ctx, total_cols)
+    row = _ds_build_notes(ws, row, ctx, total_cols)
 
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-
     filename = f"PMS-{class_code}_{datetime.now():%Y%m%d}.xlsx"
     return buf, filename
