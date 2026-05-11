@@ -1318,9 +1318,11 @@ label.multi-select-option > span { flex: 1; }
 .report-panel { margin-top: 24px; }
 .report-toolbar {
     display: flex;
-    justify-content: flex-start;
+    align-items: center;
+    gap: 8px;
     margin-bottom: 14px;
 }
+.report-toolbar-spacer { flex: 1; }
 .report-header { margin-bottom: 22px; }
 .report-title {
     font-size: 1.55rem;

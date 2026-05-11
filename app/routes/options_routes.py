@@ -67,3 +67,11 @@ def pipe_dimensions() -> dict:
     the dynamic SCH / SEL. THK selection in the Wall Thickness Table —
     per B36.10M §9, lightest WT ≥ computed Calc.Thk wins."""
     return _load("pipe_dimensions_b3610.json")
+
+
+@router.get("/pipe-dimensions-ss")
+def pipe_dimensions_ss() -> dict:
+    """ASME B36.19M Table 2-1 — stainless schedules (5S, 10S, 40S, 80S).
+    Frontend uses this in place of the carbon-steel table when the
+    material is stainless / austenitic."""
+    return _load("pipe_dimensions_b3619.json")

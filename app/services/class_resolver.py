@@ -24,7 +24,7 @@ from functools import lru_cache
 from typing import Optional
 
 from app.config import settings
-from app.services import pt_lookup, stress_lookup, y_lookup, fitting_specs
+from app.services import pt_lookup, stress_lookup, y_lookup, fitting_specs, flange_specs
 
 
 class ResolutionError(ValueError):
@@ -219,4 +219,8 @@ def _build_code_factors(material: str, pt: Optional[dict], rating: Optional[str]
         "cold_temp_c":     cold_t_c,
         "stress_at_cold":  s_cold,
         "fitting_specs":   fitting_specs.lookup(material, rating),
+        "flange_extras":   flange_specs.build(
+            rating, material,
+            (fitting_specs.lookup(material, rating) or {}).get("flange"),
+        ),
     }

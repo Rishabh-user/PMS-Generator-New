@@ -15,8 +15,9 @@ const API = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     }),
-    npsDimensions:  () => fetch('/api/nps-dimensions'),
-    pipeDimensions: () => fetch('/api/pipe-dimensions'),
+    npsDimensions:    () => fetch('/api/nps-dimensions'),
+    pipeDimensions:   () => fetch('/api/pipe-dimensions'),
+    pipeDimensionsSs: () => fetch('/api/pipe-dimensions-ss'),
     aiStatus:       () => fetch('/api/ai/status'),
     aiPmsNotes:     (body) => fetch('/api/ai/pms-notes', {
         method: 'POST',
@@ -467,32 +468,72 @@ async function ensurePipeDimensions() {
     }
 }
 
-// B36.10M §9 schedule pick. Returns the lightest row whose WT ≥ calcThk
-// for the given NPS. When no row qualifies (calc exceeds the max
-// available wall in the table for that NPS), returns the heaviest row
-// available with status 'NOT OK' so the user sees the gap.
-function pickSchedule(npsDecimal, calcThkMm) {
-    const idx = window._b3610 && window._b3610.by_nps;
+// B36.19M — stainless schedules (5S / 10S / 40S / 80S). Selected when
+// the resolved class uses an austenitic stainless or 6 MO material.
+async function ensurePipeDimensionsSs() {
+    if (window._b3619) return window._b3619;
+    try {
+        const res = await API.pipeDimensionsSs();
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const byNps = {};
+        for (const row of data.rows || []) {
+            // SS rows always carry a schedule (no STD/XS aliases here).
+            if (row.wt_mm == null) continue;  // skip the "…" placeholder rows
+            const k = row.nps_decimal;
+            if (!byNps[k]) byNps[k] = [];
+            byNps[k].push(row);
+        }
+        for (const k of Object.keys(byNps)) {
+            byNps[k].sort((a, b) => a.wt_mm - b.wt_mm);
+        }
+        window._b3619 = { source: data.source, by_nps: byNps };
+        return window._b3619;
+    } catch (e) {
+        console.error('[pipe-dimensions-ss] failed:', e);
+        showToast('Could not load stainless pipe dimensions (B36.19M).', 'error', 5000);
+        return null;
+    }
+}
+
+// Pick the right dimension table for the resolved material. Stainless /
+// austenitic / 6 MO materials use B36.19M (S-suffix schedules); every-
+// thing else uses B36.10M. Mirror of y_lookup's category detection.
+function _materialUsesStainlessSchedules(material) {
+    if (!material) return false;
+    return /(?:^|\b)(SS\s*316|SS\s*304|TP\s*316|TP\s*304|6\s*MO|N08367)/i.test(material);
+}
+
+// Schedule pick — B36.10M for carbon-family materials, B36.19M for
+// stainless / 6 MO. Returns the lightest row whose WT ≥ calcThk for
+// the given NPS. Falls back to the heaviest row + status='NOT OK' when
+// nothing qualifies, so the engineer sees the gap rather than '—'.
+function pickSchedule(npsDecimal, calcThkMm, material) {
+    const useSs = _materialUsesStainlessSchedules(material);
+    const tableObj = useSs ? window._b3619 : window._b3610;
+    const idx = tableObj && tableObj.by_nps;
     if (!idx) return null;
     const rows = idx[npsDecimal];
     if (!rows || !rows.length) return null;
     if (calcThkMm == null || Number.isNaN(calcThkMm)) return null;
 
-    // Already sorted ascending by WT.
+    // Rows are sorted ascending by WT.
     let pick = rows.find(r => r.wt_mm >= calcThkMm) || null;
     let status = 'OK';
     if (!pick) {
-        pick = rows[rows.length - 1]; // heaviest available
+        pick = rows[rows.length - 1];
         status = 'NOT OK';
     }
 
-    // Display rule: schedule number when present, otherwise identification.
+    // Display rule: numeric schedule if present, else identification
+    // (STD / XS / XXS from B36.10M — B36.19M rows always have a schedule).
     const display = pick.schedule != null ? pick.schedule : (pick.identification || '—');
 
     return {
         sch_display: String(display),
         wt_mm:       pick.wt_mm,
         status,
+        table:       useSs ? 'B36.19M' : 'B36.10M',
         row:         pick,
     };
 }
@@ -564,8 +605,11 @@ function computeWallThicknessRows(state, designPbarg, designTc) {
         const tm      = (t_mm != null) ? t_mm + C_mm : null;
         const calcThk = (tm != null) ? tm / (1 - millTol) : null;
 
-        // Schedule pick from B36.10M §9: lightest WT ≥ Calc.Thk.
-        const sched = (calcThk != null) ? pickSchedule(parseFloat(r.nps), calcThk) : null;
+        // Schedule pick from B36.10M (CS family) or B36.19M (stainless),
+        // §9 rule: lightest WT ≥ Calc.Thk.
+        const sched = (calcThk != null)
+            ? pickSchedule(parseFloat(r.nps), calcThk, state.material)
+            : null;
         const sel_thk_mm  = sched ? sched.wt_mm : null;
         const sch_display = sched ? sched.sch_display : null;
         const sch_status  = sched ? sched.status : null;
@@ -807,6 +851,108 @@ function renderPipeFittingsTab(state, designPbarg, designTc) {
     if (branch) {
         branch.textContent = 'Ref. APPENDIX-1, Chart 1';
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tab 5 — Component cards (Flange, Bolts/Nuts/Gaskets, Valves, Spectacle)
+//
+// All four cards are populated from state.codeFactors.flange_extras and
+// fitting_specs. Re-rendered on every refresh so any change to material /
+// rating / NACE flag flows through.
+// ---------------------------------------------------------------------------
+
+function _kvRow(label, value, opts) {
+    opts = opts || {};
+    const bold = opts.bold ? ' bold' : '';
+    const muted = opts.muted ? ' style="color:var(--text-muted);font-style:italic"' : '';
+    return `<div class="kv-row"><span class="kv-label">${escapeHtml(label)}</span>` +
+           `<span class="kv-value${bold}"${muted}>${value}</span></div>`;
+}
+
+function renderFlangeCard(state) {
+    const card = document.getElementById('rFlangeCard');
+    if (!card) return;
+    const cf   = state.codeFactors || {};
+    const fs   = cf.fitting_specs || {};
+    const fx   = cf.flange_extras || {};
+    const face = fx.face || {};
+    const type_ = fx.type || {};
+
+    const rows = [];
+    rows.push(_kvRow('MOC', escapeHtml(fs.flange || '—'), { bold: true }));
+    rows.push(_kvRow('FACE',
+        `${escapeHtml(state.rating || '—')}, <strong>${escapeHtml(face.code || '—')}</strong>` +
+        ` <span class="unit">(${escapeHtml(face.label || '')})</span>`));
+    rows.push(_kvRow('Type', escapeHtml(type_.type || '—')));
+    rows.push(`<div class="kv-row top"><span class="kv-label">Compact Flange</span>` +
+        `<span class="kv-value" style="text-align:right;max-width:65%;font-size:0.82rem">` +
+        `${escapeHtml(type_.compact || '—')}</span></div>`);
+    rows.push(`<div class="kv-row top"><span class="kv-label">Hub Connector</span>` +
+        `<span class="kv-value" style="text-align:right;max-width:65%;font-size:0.82rem">` +
+        `${escapeHtml(type_.hub || '—')}</span></div>`);
+
+    card.innerHTML = rows.join('');
+}
+
+function renderBoltsCard(state) {
+    const card = document.getElementById('rBoltsCard');
+    if (!card) return;
+    const fx = (state.codeFactors || {}).flange_extras || {};
+    const b  = fx.bolting || {};
+    const g  = fx.gasket  || {};
+    const rows = [
+        `<div class="kv-row top"><span class="kv-label">Stud Bolts</span>` +
+            `<span class="kv-value" style="text-align:right;max-width:65%;font-size:0.82rem">` +
+            `${escapeHtml(b.stud || '—')}</span></div>`,
+        `<div class="kv-row top"><span class="kv-label">Hex Nuts</span>` +
+            `<span class="kv-value" style="text-align:right;max-width:65%;font-size:0.82rem">` +
+            `${escapeHtml(b.hex_nut || '—')}</span></div>`,
+        `<div class="kv-row top"><span class="kv-label">Gasket</span>` +
+            `<span class="kv-value" style="text-align:right;max-width:65%;font-size:0.82rem">` +
+            `${escapeHtml(g.spec || '—')}</span></div>`,
+    ];
+    card.innerHTML = rows.join('');
+}
+
+function renderSpectacleCard(state) {
+    const card = document.getElementById('rSpectacleCard');
+    if (!card) return;
+    const fx = (state.codeFactors || {}).flange_extras || {};
+    const s  = fx.spectacle || {};
+    card.innerHTML = [
+        _kvRow('MOC', escapeHtml(s.moc || '—'), { bold: true }),
+        _kvRow('Standard (Small)', escapeHtml(s.small_bore || '—')),
+        _kvRow('Standard (Large)', escapeHtml(s.large_bore || '—')),
+    ].join('');
+}
+
+function renderValvesCard(state) {
+    const card = document.getElementById('rValvesCard');
+    if (!card) return;
+    const cf  = state.codeFactors || {};
+    const fx  = cf.flange_extras || {};
+    const fc  = fx.face || {};
+    const ratingFace = `${state.rating || '—'}, ${fc.code || ''}`.trim().replace(/, *$/, '');
+    // Project-internal valve codes (BLRPF10J, GAYMF10J, …) aren't standard
+    // — they require the project valve catalog. Surface the rating + face
+    // so the engineer can manually pick codes from their catalog and add
+    // them later. The Ball / Gate / Globe / Check / DBB rows are blank
+    // placeholders that the engineer fills in.
+    card.innerHTML = [
+        _kvRow('Rating', escapeHtml(ratingFace), { bold: true }),
+        _kvRow('Ball',   '<em>— pending project valve catalog —</em>', { muted: true }),
+        _kvRow('Gate',   '<em>— pending project valve catalog —</em>', { muted: true }),
+        _kvRow('Globe',  '<em>— pending project valve catalog —</em>', { muted: true }),
+        _kvRow('Check',  '<em>— pending project valve catalog —</em>', { muted: true }),
+        _kvRow('DBB',    '<em>— pending project valve catalog —</em>', { muted: true }),
+    ].join('');
+}
+
+function renderTab5Components(state) {
+    renderFlangeCard(state);
+    renderBoltsCard(state);
+    renderSpectacleCard(state);
+    renderValvesCard(state);
 }
 
 // ---------------------------------------------------------------------------
@@ -1544,6 +1690,7 @@ function wireReportInputs(state) {
         renderSummaryStats(state, dp, dt);
         renderTagLegend(state);
         renderPipeFittingsTab(state, dp, dt);
+        renderTab5Components(state);
     };
 
     pBarg.addEventListener('input', () => {
@@ -1604,6 +1751,7 @@ function showReport(state) {
     Promise.all([
         ensureNpsDimensions(),
         ensurePipeDimensions(),
+        ensurePipeDimensionsSs(),
     ]).then(() => {
         populateWallThicknessTable(state, state.designP, state.designT);
         renderFormulaCard(state, state.designP, state.designT);
@@ -1670,6 +1818,67 @@ function wireForm() {
 
     const back = document.getElementById('backToFormBtn');
     if (back) back.addEventListener('click', hideReport);
+
+    // Download Excel — pulls live design conditions from Tab 2 inputs so
+    // the export reflects whatever the user is currently looking at.
+    const xlsxBtn = document.getElementById('downloadExcelBtn');
+    if (xlsxBtn) {
+        xlsxBtn.addEventListener('click', async () => {
+            const cached = window._lastResolution;
+            if (!cached) {
+                showToast('Resolve a class first.', 'error');
+                return;
+            }
+            const dp = parseFloat(document.getElementById('rDesignPressure')?.value);
+            const dt = parseFloat(document.getElementById('rDesignTemperature')?.value);
+            const md = parseFloat(document.getElementById('rMdmt')?.value);
+            const joint = document.getElementById('rJointType')?.value || 'Seamless';
+
+            const rating = document.getElementById('pipingClass').value.trim();
+            const material = document.getElementById('material').value.trim();
+            const ca = document.getElementById('corrosionAllowance').value.trim();
+            const service = document.getElementById('service').value.trim();
+
+            xlsxBtn.disabled = true;
+            const origLabel = xlsxBtn.innerHTML;
+            xlsxBtn.innerHTML = 'Generating…';
+
+            try {
+                const res = await fetch('/api/export/excel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        rating, material, ca, service,
+                        design_p_barg: dp, design_t_c: dt,
+                        mdmt_c: Number.isNaN(md) ? -29 : md,
+                        joint_type: joint,
+                    }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                const blob = await res.blob();
+                // Extract filename from Content-Disposition if present.
+                const disp = res.headers.get('Content-Disposition') || '';
+                const m = disp.match(/filename="([^"]+)"/);
+                const filename = m ? m[1] : `PMS-${cached.class_code}.xlsx`;
+
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                showToast(`Downloaded ${filename}`, 'success', 4000);
+            } catch (e) {
+                showToast(`Export failed: ${e.message || e}`, 'error', 6000);
+            } finally {
+                xlsxBtn.disabled = false;
+                xlsxBtn.innerHTML = origLabel;
+            }
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------

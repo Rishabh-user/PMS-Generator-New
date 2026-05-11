@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PMS Generator</title>
     <link rel="icon" type="image/png" href="/static/images/logo.png">
-    <link rel="stylesheet" href="/static/css/styles.css?v=19">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -101,6 +101,11 @@
 
                 <div class="report-toolbar">
                     <button type="button" class="btn btn-outline btn-sm" id="backToFormBtn">&larr; Back to inputs</button>
+                    <div class="report-toolbar-spacer"></div>
+                    <button type="button" class="btn btn-primary btn-sm" id="downloadExcelBtn">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+                        Download Excel
+                    </button>
                 </div>
 
                 <!-- Generated-PMS banner — class code, input pills, internal
@@ -372,15 +377,28 @@
                         <div id="rAiNotesBody" class="ai-notes-body"></div>
                     </div>
 
-                    <div class="placeholder-card" style="margin-top:16px">
-                        <div class="placeholder-card-title">Components — pending data sources</div>
-                        <ul class="placeholder-list">
-                            <li><strong>Flange material</strong> &mdash; A105N (CS forged), A350 LF2 (LTCS), A182 F316L (SS), per material family</li>
-                            <li><strong>Bolting</strong> &mdash; A193 B7 / B7M (NACE) studs, A194 2H / 2HM nuts, optional Xylan coating</li>
-                            <li><strong>Gasket</strong> &mdash; ASME B16.20 spiral wound; PTFE / RTJ overrides per service</li>
-                            <li><strong>Valve types</strong> &mdash; ball / gate / globe / check / butterfly &mdash; with trim per service</li>
-                            <li><strong>Spectacle blind / spacer</strong> &mdash; B16.48 sizing, MOC matched to pipe family</li>
-                        </ul>
+                    <!-- Flange + Bolts/Nuts/Gaskets row -->
+                    <div class="two-col" style="margin-top:16px">
+                        <div class="card">
+                            <div class="card-title-underline">Flange</div>
+                            <div class="kv-list" id="rFlangeCard"></div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title-underline">Bolts / Nuts / Gaskets</div>
+                            <div class="kv-list" id="rBoltsCard"></div>
+                        </div>
+                    </div>
+
+                    <!-- Valves (placeholder) + Spectacle row -->
+                    <div class="two-col" style="margin-top:16px">
+                        <div class="card">
+                            <div class="card-title-underline">Valves</div>
+                            <div class="kv-list" id="rValvesCard"></div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title-underline">Spectacle Blind / Spacer</div>
+                            <div class="kv-list" id="rSpectacleCard"></div>
+                        </div>
                     </div>
                 </div>
 
@@ -400,6 +418,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=21"></script>
+    <script src="/static/js/app.js?v=24"></script>
 </body>
 </html>
