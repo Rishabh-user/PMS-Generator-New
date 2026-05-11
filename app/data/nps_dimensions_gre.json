@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "source": "Project §5.5 — GRE pipe (Filament-wound GRE per ASTM D2996: RTRP-11AW)",
+    "applies_to": "GRE classes A50 / A52 (Raw Sea Water / Special Services)",
+    "note": "Per-NPS OD, ID, and WT are project-supplied (manufacturer's standard). No schedule pick — the WT column reflects actual GRE wall thickness, not a B36.10M lookup."
+  },
+  "rows": [
+    { "nps": "1",   "nps_decimal": 1.0,  "od_mm": 34.1,   "id_mm": 27.1, "wt_mm": 3.5  },
+    { "nps": "1.5", "nps_decimal": 1.5,  "od_mm": 49.1,   "id_mm": 42.1, "wt_mm": 3.5  },
+    { "nps": "2",   "nps_decimal": 2.0,  "od_mm": 57.8,   "id_mm": 53.2, "wt_mm": 2.3  },
+    { "nps": "3",   "nps_decimal": 3.0,  "od_mm": 86.4,   "id_mm": 81.8, "wt_mm": 2.3  },
+    { "nps": "4",   "nps_decimal": 4.0,  "od_mm": 110.6,  "id_mm": 105.2,"wt_mm": 2.7  },
+    { "nps": "6",   "nps_decimal": 6.0,  "od_mm": 166.6,  "id_mm": 159.0,"wt_mm": 3.8  },
+    { "nps": "8",   "nps_decimal": 8.0,  "od_mm": 218.4,  "id_mm": 208.8,"wt_mm": 4.8  },
+    { "nps": "10",  "nps_decimal": 10.0, "od_mm": 274.5,  "id_mm": 262.9,"wt_mm": 5.8  },
+    { "nps": "12",  "nps_decimal": 12.0, "od_mm": 327.3,  "id_mm": 313.7,"wt_mm": 6.8  },
+    { "nps": "14",  "nps_decimal": 14.0, "od_mm": 359.2,  "id_mm": 344.4,"wt_mm": 7.4  },
+    { "nps": "16",  "nps_decimal": 16.0, "od_mm": 410.5,  "id_mm": 393.7,"wt_mm": 8.4  },
+    { "nps": "18",  "nps_decimal": 18.0, "od_mm": 452.2,  "id_mm": 433.8,"wt_mm": 9.2  },
+    { "nps": "20",  "nps_decimal": 20.0, "od_mm": 502.3,  "id_mm": 482.1,"wt_mm": 10.1 },
+    { "nps": "24",  "nps_decimal": 24.0, "od_mm": 602.8,  "id_mm": 578.6,"wt_mm": 12.1 },
+    { "nps": "28",  "nps_decimal": 28.0, "od_mm": 728.6,  "id_mm": 700.0,"wt_mm": 14.3 },
+    { "nps": "30",  "nps_decimal": 30.0, "od_mm": 780.6,  "id_mm": 750.0,"wt_mm": 15.3 },
+    { "nps": "32",  "nps_decimal": 32.0, "od_mm": 832.6,  "id_mm": 800.0,"wt_mm": 16.3 },
+    { "nps": "34",  "nps_decimal": 34.0, "od_mm": 884.6,  "id_mm": 850.0,"wt_mm": 17.3 },
+    { "nps": "36",  "nps_decimal": 36.0, "od_mm": 936.4,  "id_mm": 900.0,"wt_mm": 18.2 },
+    { "nps": "40",  "nps_decimal": 40.0, "od_mm": 1040.6, "id_mm": 1000.0,"wt_mm": 20.3 }
+  ]
+}

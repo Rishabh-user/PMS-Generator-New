@@ -169,7 +169,7 @@ def resolve(rating: str, material: str, ca: str, service: Optional[str] = None) 
     `class_naming.json` to fix)."""
     parts = derive_class_code(rating, material, ca)
     pt    = pt_lookup.find(rating, material)
-    code_factors = _build_code_factors(material, pt, rating, parts["class_code"])
+    code_factors = _build_code_factors(material, pt, rating, parts["class_code"], service)
 
     return {
         **parts,
@@ -181,7 +181,8 @@ def resolve(rating: str, material: str, ca: str, service: Optional[str] = None) 
 
 
 def _build_code_factors(material: str, pt: Optional[dict], rating: Optional[str] = None,
-                        class_code: Optional[str] = None) -> dict:
+                        class_code: Optional[str] = None,
+                        service: Optional[str] = None) -> dict:
     """Bundle the stress-table row and Y-curve row that apply to this
     material so the frontend can do live S(T) and Y(T) lookups.
 
@@ -224,6 +225,7 @@ def _build_code_factors(material: str, pt: Optional[dict], rating: Optional[str]
             rating, material,
             (fitting_specs.lookup(material, rating) or {}).get("flange"),
             class_code,
+            service,
         ),
         "branch_chart":    branch_chart.build(material),
     }

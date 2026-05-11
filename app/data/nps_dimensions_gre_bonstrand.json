@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "source": "Project §5.5 — GRE BONSTRAND Series 50000C (Hypochlorite service)",
+    "applies_to": "GRE class A51 (Hypochlorite — manufacturer-specific catalog)",
+    "note": "Manufacturer's published dimensions; thinner walls than the standard GRE series."
+  },
+  "rows": [
+    { "nps": "1",   "nps_decimal": 1.0, "od_mm": 31.5,  "id_mm": 27.1, "wt_mm": 2.2 },
+    { "nps": "1.5", "nps_decimal": 1.5, "od_mm": 46.5,  "id_mm": 42.1, "wt_mm": 2.2 },
+    { "nps": "2",   "nps_decimal": 2.0, "od_mm": 57.4,  "id_mm": 53.2, "wt_mm": 2.1 },
+    { "nps": "3",   "nps_decimal": 3.0, "od_mm": 86.2,  "id_mm": 81.8, "wt_mm": 2.2 },
+    { "nps": "4",   "nps_decimal": 4.0, "od_mm": 111.6, "id_mm": 105.2,"wt_mm": 3.2 },
+    { "nps": "6",   "nps_decimal": 6.0, "od_mm": 165.4, "id_mm": 159.0,"wt_mm": 3.2 }
+  ]
+}

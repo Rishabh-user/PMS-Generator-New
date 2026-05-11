@@ -117,13 +117,17 @@ def _load_json(name: str) -> dict:
     return json.loads((settings.data_dir / name).read_text(encoding="utf-8"))
 
 
-# NPS list — material-aware. Most classes share the ASME B36.10M OD series;
-# CuNi follows EEMUA 144 (smaller ODs ≤4"), Copper follows ASTM B 42 with a
-# truncated axis (0.5"–4" only) — each has its own file.
-def _nps_rows(material: Optional[str] = None) -> list[dict]:
+# NPS list — material-aware and (for GRE) service-aware.
+def _nps_rows(material: Optional[str] = None, service: Optional[str] = None) -> list[dict]:
     fname = "nps_dimensions.json"
     if material:
-        if re.search(r"CuNi|C70600|B466", material, re.I):
+        if re.search(r"\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced", material, re.I):
+            fname = (
+                "nps_dimensions_gre_bonstrand.json"
+                if service and re.search(r"Hypochlorite|BONSTRAND", service, re.I)
+                else "nps_dimensions_gre.json"
+            )
+        elif re.search(r"CuNi|C70600|B466", material, re.I):
             fname = "nps_dimensions_cuni.json"
         elif re.search(r"\bCOPPER\b|C12200|\bB42\b", material, re.I):
             fname = "nps_dimensions_copper.json"
@@ -636,7 +640,7 @@ def build_workbook(
     mill_tol = 0.125
 
     # ---- Wall thickness rows ---------------------------------------------
-    nps_list = _nps_rows(material)
+    nps_list = _nps_rows(material, service)
     b3610 = _b3610_rows()
     use_ss = _uses_stainless(material)
     b3619 = _b3619_rows() if use_ss else {}

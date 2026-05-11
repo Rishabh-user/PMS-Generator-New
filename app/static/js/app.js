@@ -15,7 +15,12 @@ const API = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     }),
-    npsDimensions:    (material) => fetch('/api/nps-dimensions' + (material ? `?material=${encodeURIComponent(material)}` : '')),
+    npsDimensions:    (material, service) => {
+        const params = [];
+        if (material) params.push(`material=${encodeURIComponent(material)}`);
+        if (service)  params.push(`service=${encodeURIComponent(service)}`);
+        return fetch('/api/nps-dimensions' + (params.length ? `?${params.join('&')}` : ''));
+    },
     pipeDimensions:   () => fetch('/api/pipe-dimensions'),
     pipeDimensionsSs: () => fetch('/api/pipe-dimensions-ss'),
 };
@@ -108,7 +113,14 @@ function initServiceMultiSelect(options, allowCustom) {
             if (txt) picks.push(txt);
         }
         const joined = picks.join(', ');
+        const prev = hidden.value;
         hidden.value = joined;
+        // Programmatic `value =` doesn't fire DOM events, so the resolver's
+        // input listener wouldn't see the change. Dispatch a synthetic input
+        // event when the joined value actually changes so the report re-runs.
+        if (joined !== prev) {
+            hidden.dispatchEvent(new Event('input', { bubbles: true }));
+        }
         if (joined) {
             label.textContent = joined.length > 70 ? joined.slice(0, 67) + '…' : joined;
             label.classList.remove('placeholder');
@@ -236,11 +248,12 @@ function populateBanner(state) {
         ...services.map(s => `<span class="pms-banner-tag service">${escapeHtml(s)}</span>`),
     ].join('');
 
+    const effective = _dsEffectiveClassCode(state);
     banner.innerHTML = `
         <div class="pms-banner-header">Resolved §5.5 PMS Code</div>
-        <div class="pms-banner-code">${escapeHtml(state.classCode)}</div>
+        <div class="pms-banner-code">${escapeHtml(effective)}</div>
         <div class="pms-banner-details">${pillsHtml}</div>
-        <div class="pms-banner-id">PMS-${escapeHtml(state.classCode)}</div>
+        <div class="pms-banner-id">PMS-${escapeHtml(effective)}</div>
     `;
 }
 
@@ -403,22 +416,27 @@ function populatePtTable(state, designTc) {
 // Material-family key — drives per-material caching of NPS dimensions.
 // CuNi (UNS C70600 / EEMUA 144) has different ODs at small bores than the
 // generic ASME B36.10M list; everyone else falls back to "default".
-function _npsKey(material) {
+function _npsKey(material, service) {
     if (!material) return 'default';
+    if (/\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced/i.test(material)) {
+        return (service && /Hypochlorite|BONSTRAND/i.test(service))
+            ? 'gre_bonstrand'
+            : 'gre';
+    }
     if (/CuNi|C70600|B466/i.test(material)) return 'cuni';
     if (/\bCOPPER\b|C12200|\bB42\b/i.test(material)) return 'copper';
     return 'default';
 }
 
-async function ensureNpsDimensions(material) {
-    const key = _npsKey(material);
+async function ensureNpsDimensions(material, service) {
+    const key = _npsKey(material, service);
     window._npsDimsByKey = window._npsDimsByKey || {};
     if (window._npsDimsByKey[key]) {
         window._npsDimensions = window._npsDimsByKey[key];
         return window._npsDimensions;
     }
     try {
-        const res = await API.npsDimensions(material);
+        const res = await API.npsDimensions(material, service);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         window._npsDimsByKey[key] = data;
@@ -1114,26 +1132,57 @@ function _isCopperMat(material) {
     if (u.includes('CUNI')) return false;
     return /COPPER|C12200|\bB42\b/i.test(material || '');
 }
-
-function _dsPipeType(material) {
-    const u = (material || '').toUpperCase();
-    if (_isCuNiMat(u)) {
-        return { sml: 'Seamless', lrg: 'Seam Welded' };
-    }
-    if (_isCopperMat(u)) {
-        // Copper temper grades per ASTM B 42: H80 hard-drawn small bore,
-        // H55 light-drawn large bore.
-        return { sml: 'Seamless Hard Drawn H80 (Regular)', lrg: 'Seamless Light Drawn H55 (Regular)' };
-    }
-    if (u.includes('SS') || u.includes('TP3') || u.includes('DSS') || u.includes('SDSS')) {
-        return { sml: 'Seamless', lrg: 'Welded, 100% RT' };
-    }
-    return { sml: 'Seamless', lrg: 'LSAW, 100% RT' };
+function _isGreMat(material) {
+    return /\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced/i.test(material || '');
+}
+function _isBonstrandService(service) {
+    return /Hypochlorite|BONSTRAND/i.test(service || '');
 }
 
-// Pipe end preparation by material. CuNi gets PE (Plain Ends) small bore
-// + Bevel Ends large bore; Copper is BE both bores (single merged cell).
-function _dsPipeEnds(material) {
+// Class code to display — for most materials this is the resolver output
+// (e.g. A1, F2N, G10). GRE is the exception: the project differentiates
+// A50 / A51 / A52 by service even though §5.5 derives a single digit (50).
+function _displayedClassCode(material, service, fallback) {
+    if (!material || !_isGreMat(material)) return fallback || '';
+    const svc = service || '';
+    if (/Hypochlorite/i.test(svc)) return 'A51';
+    if (/Special/i.test(svc))      return 'A52';
+    return 'A50';
+}
+function _dsEffectiveClassCode(state) {
+    if (!state) return '';
+    return _displayedClassCode(state.material, state.service, state.classCode);
+}
+
+function _dsPipeType(material, service) {
+    const u = (material || '').toUpperCase();
+    if (_isGreMat(u)) {
+        return _isBonstrandService(service)
+            ? { sml: 'Manufacturer standard (BONSTRAND Series 50000C)',
+                lrg: 'Manufacturer standard (BONSTRAND Series 50000C)', merge: true }
+            : { sml: 'Manufacturer standard (TBA)',
+                lrg: 'Manufacturer standard (TBA)', merge: true };
+    }
+    if (_isCuNiMat(u)) {
+        return { sml: 'Seamless', lrg: 'Seam Welded', merge: false };
+    }
+    if (_isCopperMat(u)) {
+        return { sml: 'Seamless Hard Drawn H80 (Regular)', lrg: 'Seamless Light Drawn H55 (Regular)', merge: false };
+    }
+    if (u.includes('SS') || u.includes('TP3') || u.includes('DSS') || u.includes('SDSS')) {
+        return { sml: 'Seamless', lrg: 'Welded, 100% RT', merge: false };
+    }
+    return { sml: 'Seamless', lrg: 'LSAW, 100% RT', merge: false };
+}
+
+function _dsPipeEnds(material, service) {
+    if (_isGreMat(material)) {
+        return _isBonstrandService(service)
+            ? { sml: 'Manufacturer standard (BONSTRAND Series 50000C)',
+                lrg: 'Manufacturer standard (BONSTRAND Series 50000C)', merge: true }
+            : { sml: 'Taper / Taper Socket x Spigot, Adhesive bonded',
+                lrg: 'Taper / Taper Socket x Spigot, Adhesive bonded', merge: true };
+    }
     if (_isCuNiMat(material)) {
         return { sml: 'PE', lrg: 'Bevel Ends', merge: false };
     }
@@ -1143,10 +1192,25 @@ function _dsPipeEnds(material) {
     return { sml: 'BE', lrg: 'BE', merge: false };
 }
 
-// Whether to merge the pipe-MOC row across both bore columns. CuNi and
-// Copper both use a single MOC spec spanning both ends.
 function _dsPipeMocMerge(material) {
-    return _isCuNiMat(material) || _isCopperMat(material);
+    return _isCuNiMat(material) || _isCopperMat(material) || _isGreMat(material);
+}
+
+// Pipe MOC text for GRE — material spec for A50/A52, BONSTRAND placeholder for A51.
+function _dsPipeMocGre(service, fs) {
+    if (_isBonstrandService(service)) return 'Manufacturer standard (BONSTRAND Series 50000C)';
+    return fs.pipe || '—';
+}
+
+// Pipe-data "Code" row label — defaults to ASME B 36.10M, but GRE uses the
+// project's "Manufacturer's Std." designation (BONSTRAND for A51).
+function _dsPipeCodeLabel(material, service) {
+    if (_isGreMat(material)) {
+        return _isBonstrandService(service)
+            ? "Manufacturer's Std (BONSTRAND Series 50000C)"
+            : "Manufacturer's Std.";
+    }
+    return 'ASME B 36.10M';
 }
 
 function _dsPipeMoc(specs, material, isLarge) {
@@ -1166,25 +1230,34 @@ function _dsPipeMoc(specs, material, isLarge) {
 //   Galvanised CS  → Screwed (SCRD) #3000 small bore, BW large bore
 //   90/10 CuNi     → SW small bore, BW Welded large bore (per EEMUA 234)
 //   Everything else → BW Seamless small bore, BW Welded large bore
-function _dsConnectionStyle(material) {
+function _dsConnectionStyle(material, service) {
+    if (_isGreMat(material)) {
+        const txt = _isBonstrandService(service)
+            ? 'Manufacturer standard (BONSTRAND Series 50000C)'
+            : 'Taper / Taper Socket x Spigot, Adhesive bonded';
+        return { sm_type: txt, lg_type: txt, merge: true };
+    }
     if (_isCuNiMat(material)) {
-        return { sm_type: 'SW', lg_type: 'BW, Welded' };
+        return { sm_type: 'SW', lg_type: 'BW, Welded', merge: false };
     }
     if (_isCopperMat(material)) {
         return {
             sm_type: 'Brazed Fittings (SCH to match pipe), Seamless',
             lg_type: 'Butt Weld (SCH to match pipe), Seamless',
+            merge: false,
         };
     }
     if (/GALV/i.test(material || '')) {
         return {
             sm_type: 'Screwed (SCRD), #3000',
             lg_type: 'Butt Weld (SCH to match pipe), Seamless',
+            merge: false,
         };
     }
     return {
         sm_type: 'Butt Weld (SCH to match pipe), Seamless',
         lg_type: 'Butt Weld (SCH to match pipe), Welded',
+        merge: false,
     };
 }
 
@@ -1193,14 +1266,40 @@ function _dsConnectionStyle(material) {
 // standards (B16.11) on small bore; BW families use B16.9 both bores. The
 // MOC strings come straight from fitting_specs so adding a new material
 // family in that file flows through automatically.
-function _dsComponents(material, fs) {
+function _dsComponents(material, fs, service) {
     const u          = (material || '').toUpperCase();
     const isGalv     = /GALV/.test(u);
     const isCuNi     = _isCuNiMat(u);
     const isCopper   = _isCopperMat(u);
+    const isGre      = _isGreMat(u);
     const fittingMoc = fs.fittings || '—';
     const flangeMoc  = fs.flange || '—';
     const branchMoc  = fs.branch_outlet || '—';
+
+    if (isGre) {
+        // GRE classes (A50/A51/A52). Fittings have a special row list with
+        // additional GRE-specific entries (Mold. Tee, Red. Sad, Reducer,
+        // Coupler, Adaptor). A separate Rating row sits between TYPE and
+        // MOC. Each value spans both bores (single column visually).
+        const isBon = _isBonstrandService(service);
+        const moc = isBon ? 'Manufacturer standard (BONSTRAND Series 50000C)' : fittingMoc;
+        return {
+            sm_moc: moc, lg_moc: moc, moc_merge: true,
+            // GRE has an extra "Rating" row between TYPE and MOC.
+            extra_rows: [
+                { name: 'Rating', value: isBon ? 'Manufacturer standard (BONSTRAND Series 50000C)' : '20 bar, 93degC' },
+            ],
+            rows: [
+                { name: 'Elbow',     sm: isBon ? moc : '22.5°, 45°, 90° elbow',            merge: true },
+                { name: 'Tee',       sm: isBon ? moc : 'Tee or Reducing Tee',              merge: true },
+                { name: 'Mold. Tee', sm: isBon ? moc : 'Molded Tee',                       merge: true },
+                { name: 'Red. Sad',  sm: isBon ? moc : 'Reducing Saddle - Flat Face (FF)', merge: true },
+                { name: 'Reducer',   sm: isBon ? moc : 'Conc and Ecc Reducer',             merge: true },
+                { name: 'Coupler',   sm: isBon ? moc : 'Coupler',                          merge: true },
+                { name: 'Adaptor',   sm: isBon ? moc : 'Adapter',                          merge: true },
+            ],
+        };
+    }
 
     if (isCopper) {
         // Copper (digit 40): MOC values span vertically across the MOC row
@@ -1287,12 +1386,17 @@ function _dsComponents(material, fs) {
 //   90/10 CuNi → SW Flange (small bore) + WN Flange (large bore)
 //   Galv CS    → Screwed (SCRD) + WN
 //   Else       → WN both bores
-function _dsFlangeType(material) {
+function _dsFlangeType(material, service) {
+    if (_isGreMat(material)) {
+        const txt = _isBonstrandService(service)
+            ? 'Manufacturer standard (BONSTRAND Series 50000C)'
+            : 'Taper / Taper Socket x Spigot, Adhesive bonded';
+        return { sm: txt, lg: txt, merge: true };
+    }
     if (_isCuNiMat(material)) {
         return { sm: 'SW Flange', lg: 'WN Flange', merge: false };
     }
     if (_isCopperMat(material)) {
-        // Copper uses a single "Solid slip on flange" type across both bores.
         return { sm: 'Solid slip on flange', lg: 'Solid slip on flange', merge: true };
     }
     if (/GALV/i.test(material || '')) {
@@ -1304,8 +1408,19 @@ function _dsFlangeType(material) {
 // Flange "shape" — different per material family. Returns moc/std/face
 // strings, whether to show the FACE row, and whether the section needs a
 // trailing Blind Flange table.
-function _dsFlangeBlock(material, fs, faceFull) {
+function _dsFlangeBlock(material, fs, faceFull, service) {
     const flangeMoc = fs.flange || '—';
+    if (_isGreMat(material)) {
+        const isBon = _isBonstrandService(service);
+        return {
+            moc:       isBon ? 'Manufacturer standard (BONSTRAND Series 50000C)' : flangeMoc,
+            std:       isBon ? 'Drilled to ASME B 16.5, 150#' : 'Drilled to ASME B 16.5 / 16.47A, 150#',
+            show_face: true,
+            // BONSTRAND: face row also reads the manufacturer placeholder.
+            face:      isBon ? 'Manufacturer standard (BONSTRAND Series 50000C)' : 'Flat Face (FF)',
+            blind_moc: null,    // GRE doesn't have a separate Blind Flange entry
+        };
+    }
     if (_isCuNiMat(material)) {
         return {
             moc:      '90-10Cu-Ni',
@@ -1316,8 +1431,8 @@ function _dsFlangeBlock(material, fs, faceFull) {
     }
     if (_isCopperMat(material)) {
         return {
-            moc:      'ASTM B61 UNS C92200',     // cast bronze flange material
-            std:      'ASME B 16.24',             // cast copper-alloy flanges standard
+            moc:      'ASTM B61 UNS C92200',
+            std:      'ASME B 16.24',
             show_face: true,
             face:     'FF',
             blind_moc: 'ASTM A 105N RF With 3mm Copper over lay',
@@ -1394,11 +1509,12 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const smallSch = _dsPickSch(wtRows, 0, 2) || '—';
     const largeSch = _dsPickSch(wtRows, 2.5, 80) || '—';
 
-    const pipeType  = _dsPipeType(state.material);
-    const pipeEnds  = _dsPipeEnds(state.material);
+    const svc       = state.service || '';
+    const pipeType  = _dsPipeType(state.material, svc);
+    const pipeEnds  = _dsPipeEnds(state.material, svc);
     const mergePipeMoc = _dsPipeMocMerge(state.material);
-    const pipeMocSm = _dsPipeMoc(fs, state.material, false);
-    const pipeMocLg = _dsPipeMoc(fs, state.material, true);
+    let pipeMocSm = _dsPipeMoc(fs, state.material, false);
+    let pipeMocLg = _dsPipeMoc(fs, state.material, true);
 
     // ── Pipe Data table cells (size / OD / Sch / WT for each NPS) ──
     const dsAxis = _dsNpsAxis();
@@ -1421,6 +1537,26 @@ function renderDatasheetTab(state, designPbarg, designTc) {
             return `<td>${r.calc_thk_mm != null ? _dsFmt(r.calc_thk_mm, 2) : '—'}</td>`;
         }
         return `<td>${r.sel_thk_mm != null ? _dsFmt(r.sel_thk_mm, 2) : '—'}</td>`;
+    }).join('');
+
+    // GRE-specific rows: ID and WT come directly from the dimension file
+    // (no schedule picking). Reads `id_mm` / `wt_mm` from the NPS dim
+    // entries, not from the wt_rows the picker computes.
+    const dims = window._npsDimensions;
+    const dimByNps = {};
+    if (dims && dims.rows) {
+        for (const r of dims.rows) {
+            const k = r.nps_decimal;
+            if (typeof k === 'number') dimByNps[k] = r;
+        }
+    }
+    const idCellsRow = dsAxis.map(n => {
+        const r = dimByNps[n];
+        return `<td>${r && r.id_mm != null ? _dsFmt(r.id_mm, 1) : '—'}</td>`;
+    }).join('');
+    const wtCellsRowGre = dsAxis.map(n => {
+        const r = dimByNps[n];
+        return `<td>${r && r.wt_mm != null ? _dsFmt(r.wt_mm, 1) : '—'}</td>`;
     }).join('');
 
     // Split TYPE / MOC / Ends across small + large bore columns.
@@ -1459,6 +1595,17 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const stud = (fx.bolting || {}).stud || '—';
     const nut  = (fx.bolting || {}).hex_nut || '—';
     const gasket = (fx.gasket || {}).spec || '—';
+    // GRE classes can have multiple gasket rows (EPDM Full Face + Flat Ring).
+    const gasketSpecs = (fx.gasket || {}).specs || [(fx.gasket || {}).spec || '—'];
+    const isGre = _isGreMat(state.material);
+    const isBon = _isBonstrandService(svc);
+    const pipeCodeLabel = _dsPipeCodeLabel(state.material, svc);
+    if (isGre) {
+        // Override the Pipe MOC text for GRE — use the project's long-form
+        // pipe spec (or BONSTRAND placeholder for A51).
+        pipeMocSm = _dsPipeMocGre(svc, fs);
+        pipeMocLg = pipeMocSm;
+    }
 
     // Spectacle
     const sp = fx.spectacle || {};
@@ -1467,12 +1614,12 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const ratingNum  = state.rating || '—';
     const faceCode   = (fx.face || {}).code || '';
     const faceFull   = `${ratingNum} ${faceCode}, Serrated Finish`;
-    const flangeTypeSplit = _dsFlangeType(state.material);
-    const flangeBlock = _dsFlangeBlock(state.material, fs, faceFull);
+    const flangeTypeSplit = _dsFlangeType(state.material, svc);
+    const flangeBlock = _dsFlangeBlock(state.material, fs, faceFull, svc);
 
     // Fittings — material-aware columns + standards
-    const connStyle  = _dsConnectionStyle(state.material);
-    const components = _dsComponents(state.material, fs);
+    const connStyle  = _dsConnectionStyle(state.material, svc);
+    const components = _dsComponents(state.material, fs, svc);
 
     const cleanMat = (typeof cleanMaterial === 'function') ? cleanMaterial(state.material) : state.material;
 
@@ -1495,7 +1642,7 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 </tr>
                 <tr>
                     <td class="ds-class-badge"></td>
-                    <td class="ds-id-value"><strong>${escapeHtml(state.classCode || '—')}</strong></td>
+                    <td class="ds-id-value"><strong>${escapeHtml(_dsEffectiveClassCode(state) || '—')}</strong></td>
                     <td class="ds-id-value">${escapeHtml(state.rating || '—')}</td>
                     <td class="ds-id-value">${escapeHtml(cleanMat || '—')}</td>
                     <td class="ds-id-value">${escapeHtml(state.ca || '—')}</td>
@@ -1543,7 +1690,7 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 </tr>
                 <tr>
                     <td class="ds-label">Code</td>
-                    <td colspan="${dsAxis.length}" class="ds-value">ASME B 36.10M</td>
+                    <td colspan="${dsAxis.length}" class="ds-value">${escapeHtml(pipeCodeLabel)}</td>
                 </tr>
                 <tr>
                     <td class="ds-label">Size (in)</td>${npsCellsRow}
@@ -1551,14 +1698,15 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 <tr>
                     <td class="ds-label">O.D. mm</td>${odCellsRow}
                 </tr>
+                ${isGre
+                    ? `<tr><td class="ds-label">I.D. mm</td>${idCellsRow}</tr>
+                       <tr><td class="ds-label">WT (mm)</td>${wtCellsRowGre}</tr>`
+                    : `<tr><td class="ds-label">Sch.</td>${schCellsRow}</tr>
+                       <tr><td class="ds-label">WT. mm</td>${wtCellsRow}</tr>`}
                 <tr>
-                    <td class="ds-label">Sch.</td>${schCellsRow}
-                </tr>
-                <tr>
-                    <td class="ds-label">WT. mm</td>${wtCellsRow}
-                </tr>
-                <tr>
-                    <td class="ds-label">TYPE</td>${typeRow}
+                    <td class="ds-label">TYPE</td>${pipeType.merge
+                        ? `<td colspan="${dsAxis.length}">${escapeHtml(pipeType.sml)}</td>`
+                        : typeRow}
                 </tr>
                 <tr>
                     <td class="ds-label">MOC</td>${mocRow}
@@ -1573,9 +1721,17 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 <tr class="ds-section-row"><td colspan="3">Fittings Data</td></tr>
                 <tr>
                     <td class="ds-label">TYPE</td>
-                    <td class="ds-value">${escapeHtml(connStyle.sm_type)}</td>
-                    <td class="ds-value">${escapeHtml(connStyle.lg_type)}</td>
+                    ${connStyle.merge
+                        ? `<td colspan="2" class="ds-value">${escapeHtml(connStyle.sm_type)}</td>`
+                        : `<td class="ds-value">${escapeHtml(connStyle.sm_type)}</td>
+                           <td class="ds-value">${escapeHtml(connStyle.lg_type)}</td>`}
                 </tr>
+                ${(components.extra_rows || []).map(er => `
+                    <tr>
+                        <td class="ds-label">${escapeHtml(er.name)}</td>
+                        <td colspan="2" class="ds-value">${escapeHtml(er.value || '—')}</td>
+                    </tr>
+                `).join('')}
                 ${components.moc_rowspan
                     ? (() => {
                         // MOC cell spans MOC row + all component rows.
@@ -1637,7 +1793,12 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 <tr><td class="ds-label">MOC</td><td class="ds-value">${escapeHtml(flangeBlock.blind_moc)}</td></tr>
             </table>` : ''}
 
-            ${!_isCopperMat(state.material) ? `
+            ${isGre ? `
+            <!-- ── Spade and Spacer (GRE) ── -->
+            <table class="ds-table">
+                <tr class="ds-section-row"><td colspan="2">Spade and Spacer</td></tr>
+                <tr><td class="ds-label">TYPE</td><td class="ds-value">Manufacturer standard, Flat Face (FF)</td></tr>
+            </table>` : (!_isCopperMat(state.material) ? `
             <!-- ── Spectacle Blind / Spacer Blinds (skipped for Copper) ── -->
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="3">Spectacle Blind/Spacer Blinds</td></tr>
@@ -1647,17 +1808,19 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                     <td class="ds-value">${escapeHtml(sp.small_bore || '—')}</td>
                     <td class="ds-value">${escapeHtml(sp.large_bore || '—')}</td>
                 </tr>
-            </table>` : ''}
+            </table>` : '')}
 
-            <!-- ── Bolts / Nuts / Gaskets (renamed "Mechanical Joints" for Copper) ── -->
+            <!-- ── Bolts / Nuts / Gaskets (Mechanical Joints for Copper) ── -->
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="2">${escapeHtml(_dsBoltsSectionTitle(state.material))}</td></tr>
                 <tr><td class="ds-label">Stud Bolts</td><td class="ds-value">${escapeHtml(stud)}</td></tr>
                 <tr><td class="ds-label">Hex Nuts</td><td class="ds-value">${escapeHtml(nut)}</td></tr>
-                <tr><td class="ds-label">Gasket</td><td class="ds-value">${escapeHtml(gasket)}</td></tr>
+                ${isGre ? `<tr><td class="ds-label">Washers</td><td class="ds-value">ASTM A 307 Gr. B HDG</td></tr>` : ''}
+                ${gasketSpecs.map(g => `<tr><td class="ds-label">Gasket</td><td class="ds-value">${escapeHtml(g)}</td></tr>`).join('')}
             </table>
 
-            <!-- ── Valves ── -->
+            ${(isGre && isBon) ? '' : `
+            <!-- ── Valves (hidden for A51 BONSTRAND / Hypochlorite) ── -->
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="2">Valves</td></tr>
                 <tr><td class="ds-label">Rating</td><td class="ds-value">${escapeHtml(v.rating || '—')}</td></tr>
@@ -1668,7 +1831,7 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 ${v.butterfly ? `<tr><td class="ds-label">Butterfly</td><td class="ds-value ds-code">${escapeHtml(vCode('butterfly'))}</td></tr>` : ''}
                 ${v.dbb ? `<tr><td class="ds-label">DBB</td><td class="ds-value ds-code">${escapeHtml(vCode('dbb'))}</td></tr>` : ''}
                 ${v.dbb_inst ? `<tr><td class="ds-label">DBB (Inst.)</td><td class="ds-value ds-code">${escapeHtml(vCode('dbb_inst'))}</td></tr>` : ''}
-            </table>
+            </table>`}
 
             <!-- ── Notes ── -->
             <table class="ds-table">
@@ -2356,7 +2519,7 @@ function showReport(state) {
     // so re-render both once data lands. Subsequent refreshes (driven
     // by input edits) will hit the cache and work first try.
     Promise.all([
-        ensureNpsDimensions(state.material),
+        ensureNpsDimensions(state.material, state.service),
         ensurePipeDimensions(),
         ensurePipeDimensionsSs(),
     ]).then(() => {
@@ -2669,8 +2832,10 @@ function renderResolution(panel, data, inputs) {
         inputs.ca,
     ].filter(Boolean).map(p => `<span class="ds-class-pill">${escapeHtml(p)}</span>`).join('');
 
+    // Apply the displayed-class-code rule (GRE service-based override).
+    const displayedCode = _displayedClassCode(inputs.material, inputs.service, data.class_code);
     panel.innerHTML = `
-        <div class="ds-class-code">${escapeHtml(data.class_code)}</div>
+        <div class="ds-class-code">${escapeHtml(displayedCode)}</div>
         <div class="ds-class-meta">Resolved §5.5 class</div>
         <div class="ds-class-pills">${pills}</div>
     `;
@@ -2678,7 +2843,7 @@ function renderResolution(panel, data, inputs) {
     // Also surface the class code in the top-nav center for orientation.
     const navStatus = document.getElementById('navStatus');
     if (navStatus) {
-        navStatus.innerHTML = `<span class="nav-status-pill">${escapeHtml(data.class_code)}</span>`;
+        navStatus.innerHTML = `<span class="nav-status-pill">${escapeHtml(displayedCode)}</span>`;
     }
 
     // Seed design-conditions defaults so showReport() can pre-fill if empty.

@@ -110,11 +110,15 @@ _RULES: list[tuple[re.Pattern, dict]] = [
         "branch_outlet":"MSS SP 97 + B 381 F2",
     }),
     # --- Composite / plastic — not in B31.3 Table A-1, manufacturer-specific ---
-    (re.compile(r"(?i)\bGRE\b|EPOXY\s*FIBRE"), {
+    (re.compile(r"(?i)\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced"), {
         "family":       "Glass-Reinforced Epoxy",
-        "pipe":         "Per ISO 14692 / project mfr. spec",
-        "fittings":     "Per ISO 14692 / project mfr. spec",
-        "flange":       "Per mfr. spec (typ. PN20 GRE flange)",
+        # Pipe / fitting / flange MOCs match the project §5.5 long-form
+        # spec used in classes A50 / A52 (Raw Sea Water / Special Services).
+        # A51 (Hypochlorite, BONSTRAND) overrides these in the Datasheet
+        # renderer based on service.
+        "pipe":         "Filament wound Glassfiber Reinforced Epoxy (GRE) pipe, Conductive, ASTM D2996: RTRP-11AW",
+        "fittings":     "Filament wound Glassfiber Reinforced Epoxy (GRE) fitting, Conductive, ASTM D5685: RTRF, 11F1, or equivalent",
+        "flange":       "Filament Wound Fibre reinforced epoxy flange, conductive, Heavy duty, ASTM D4024",
         "valve_body":   "NAB body — ASTM B 148 UNS C95800",
         "branch_outlet":"GRE saddle / lateral per mfr.",
     }),

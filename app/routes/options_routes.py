@@ -28,9 +28,20 @@ _NPS_OVERRIDES: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def _resolve_nps_file(material: Optional[str]) -> str:
+_GRE_MATERIAL_PATTERN = re.compile(r"(?i)\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced")
+_BONSTRAND_SERVICE_PATTERN = re.compile(r"(?i)Hypochlorite|BONSTRAND")
+
+
+def _resolve_nps_file(material: Optional[str], service: Optional[str] = None) -> str:
     if not material:
         return "nps_dimensions.json"
+    # GRE has two sub-catalogs distinguished by service:
+    #   Hypochlorite / BONSTRAND  → A51 (6 NPS sizes, manufacturer catalog)
+    #   Anything else (Raw Sea Water, Special) → A50/A52 (20 NPS sizes)
+    if _GRE_MATERIAL_PATTERN.search(material):
+        if service and _BONSTRAND_SERVICE_PATTERN.search(service):
+            return "nps_dimensions_gre_bonstrand.json"
+        return "nps_dimensions_gre.json"
     for pat, fname in _NPS_OVERRIDES:
         if pat.search(material):
             return fname
@@ -79,12 +90,11 @@ def all_options() -> dict:
 
 
 @router.get("/nps-dimensions")
-def nps_dimensions(material: Optional[str] = None) -> dict:
-    """NPS → OD (mm) lookup used by the Wall Thickness Calculation Table.
-    Material-aware: most classes share the ASME B36.10M list, but a few
-    (e.g. CuNi → EEMUA 144) override with their own OD series. Callers
-    that don't pass a material get the default B36.10M list."""
-    return _load(_resolve_nps_file(material))
+def nps_dimensions(material: Optional[str] = None, service: Optional[str] = None) -> dict:
+    """NPS → OD (mm) lookup. Material-aware (CuNi / Copper / GRE override
+    the default B36.10M list) and for GRE also service-aware (Hypochlorite
+    routes to the BONSTRAND catalog with 6 NPS sizes)."""
+    return _load(_resolve_nps_file(material, service))
 
 
 @router.get("/pipe-dimensions")

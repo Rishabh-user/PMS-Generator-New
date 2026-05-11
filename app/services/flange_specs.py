@@ -78,6 +78,21 @@ def _is_cuni(material: str) -> bool:
     return bool(material) and bool(re.search(r"CuNi|C70600|B466", material, re.I))
 
 
+def _is_gre(material: str) -> bool:
+    """Project digit 50/51/52 — Glass-Reinforced Epoxy. Filament-wound
+    composite pipe for seawater, hypochlorite, and chemical service."""
+    if not material:
+        return False
+    return bool(re.search(r"\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced", material, re.I))
+
+
+def _is_bonstrand_service(service: Optional[str]) -> bool:
+    """Hypochlorite service → BONSTRAND Series 50000C (A51 variant)."""
+    if not service:
+        return False
+    return bool(re.search(r"Hypochlorite|BONSTRAND", service, re.I))
+
+
 def _is_copper(material: str) -> bool:
     """Project digit 40 — pure Copper (UNS C12200). Distinct from CuNi
     (90/10 Cu-Ni alloy, digit 30) — Copper is the bare metal."""
@@ -126,8 +141,9 @@ def _is_soft_gasket_material(material: str) -> bool:
 #   150 - 600#            → RF (Raised Face)
 #   900# / 1500# / 2500#  → RTJ (Ring-Type Joint) for sealing reliability.
 def face_type(rating: str, material: str) -> dict:
-    # CuNi (EEMUA 234) and pure Copper (ASME B 16.24) both use Flat Face.
-    if _is_cuni(material) or _is_copper(material):
+    # CuNi (EEMUA 234), pure Copper (ASME B 16.24), and GRE (composite
+    # flange seating) all use Flat Face.
+    if _is_cuni(material) or _is_copper(material) or _is_gre(material):
         return {"code": "FF", "label": "Flat Face"}
     rn = _rating_num(rating)
     if rn is None or rn <= 600:
@@ -152,6 +168,7 @@ def bolting(material: str) -> dict:
     duplex = _is_duplex_family(material)
     cuni = _is_cuni(material)
     copper = _is_copper(material)
+    gre = _is_gre(material)
     # DSS / SDSS (digits 20 + 25) — project rule: ASTM A 453 Gr. 660 for both
     # stud and nut across ALL ratings (with or without NACE). A453 660 is
     # precipitation-hardened austenitic and corrosion-resistant on its own,
@@ -161,10 +178,11 @@ def bolting(material: str) -> dict:
             "stud":    "ASTM A 453 Gr. 660",
             "hex_nut": "ASTM A 453 Gr. 660",
         }
-    # 90/10 CuNi (digit 30) AND pure Copper (digit 40) — project rule:
-    # hardness-controlled NACE-grade bolting (B7M / 2HM) for general
-    # corrosion / seawater service.
-    if cuni or copper:
+    # 90/10 CuNi (digit 30), Copper (digit 40), and GRE (digits 50/51/52)
+    # — project rule: B7M / 2HM + Xylan for general-corrosion / seawater /
+    # chemical service. (GRE pipe doesn't bolt directly — bolts seat the
+    # GRE flange's metal backing ring through the EPDM gasket stack.)
+    if cuni or copper or gre:
         stud, nut = "ASTM A 193 Gr. B7M", "ASTM A 194 Gr. 2HM"
         return {
             "stud":    f"{stud}, {_BOLT_COATING}",
@@ -241,7 +259,29 @@ def _gasket_materials(material: str) -> dict:
     }
 
 
-def gasket(face: str, material: str) -> dict:
+def gasket(face: str, material: str, service: Optional[str] = None) -> dict:
+    # GRE classes (digits 50/51/52):
+    #   - A51 BONSTRAND (Hypochlorite) → single CNAF flat ring
+    #   - A50/A52 general GRE → two gaskets (EPDM Full Face + EPDM Flat Ring)
+    if _is_gre(material):
+        if _is_bonstrand_service(service):
+            return {
+                "type": "Flat Ring Gasket",
+                "spec": "ASME B 16.21, Flat Ring, 3 mm, CNAF, Oil Resistant, Glass Fibre Composite with NBR Binder",
+                # `specs` mirrors `spec` so renderers that look at the list
+                # form get a consistent shape (single-entry array here).
+                "specs": [
+                    "ASME B 16.21, Flat Ring, 3 mm, CNAF, Oil Resistant, Glass Fibre Composite with NBR Binder",
+                ],
+            }
+        return {
+            "type": "EPDM Rubber Gasket",
+            "spec": "EPDM Rubber Full Face Gasket with SS insert Shore A Hardness 70 ± 5, #150 (e.g. Kroll & Ziller G-ST/PS)",
+            "specs": [
+                "EPDM Rubber Full Face Gasket with SS insert Shore A Hardness 70 ± 5, #150 (e.g. Kroll & Ziller G-ST/PS)",
+                "EPDM Rubber Flat Ring Gasket with SS insert Shore A Hardness 70 ± 5, #150 (e.g. Kroll & Ziller G-ST/PS)",
+            ],
+        }
     # Pure Copper (digit 40) — CNAF full-face gasket per ASME B 16.21.
     # (Different from CuNi which uses neoprene/EPDM — Copper bare-metal
     # service uses compressed non-asbestos fibre for thermal stability.)
@@ -446,8 +486,8 @@ def _valve_codes(rating: str, material: str, class_code: Optional[str]) -> dict:
     #   600#:                                 Triple-Offset-PEEK only
     #   900#+:                                None — pressure-class uses ball/gate.
     if not nace:
-        cu_family = _is_cuni(material) or _is_copper(material)
-        if cu_family and rn and rn <= 300:
+        wafer_only = _is_cuni(material) or _is_copper(material) or _is_gre(material)
+        if wafer_only and rn and rn <= 300:
             codes["butterfly"] = f"BFWT{tail}"
         elif rn and rn <= 300:
             codes["butterfly"] = f"BFWT{tail}, BFTP{tail}"
@@ -512,14 +552,16 @@ def valves(rating: str, material: str, class_code: Optional[str] = None) -> dict
 # Public entrypoint
 # ──────────────────────────────────────────────────────────────────────
 def build(rating: str, material: str, flange_moc: Optional[str],
-          class_code: Optional[str] = None) -> dict:
-    """One-shot bundle of all five sections for code_factors.flange_extras."""
+          class_code: Optional[str] = None,
+          service: Optional[str] = None) -> dict:
+    """One-shot bundle of all five sections for code_factors.flange_extras.
+    `service` is only used by GRE — selects EPDM (A50/A52) vs CNAF (A51)."""
     face = face_type(rating, material)
     return {
         "face":      face,
         "type":      flange_type(rating, material),
         "bolting":   bolting(material),
-        "gasket":    gasket(face["code"], material),
+        "gasket":    gasket(face["code"], material, service),
         "spectacle": spectacle(flange_moc),
         "valves":    valves(rating, material, class_code),
     }
