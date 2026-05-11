@@ -426,8 +426,101 @@ def _build_flange_bolts_gasket(ws, row: int, ctx: dict) -> int:
     return row
 
 
+def _build_branch_chart(ws, row: int, ctx: dict) -> int:
+    """Section 10 — Appendix-1 Branch Connection Chart for this material.
+    Renders the lower-triangular matrix (run NPS × branch NPS) with the
+    project legend below."""
+    chart = ctx.get("branch_chart")
+    if not chart or not chart.get("matrix") or not chart.get("nps_axis"):
+        return row
+    title = "10. BRANCH CONNECTION CHART"
+    sub = chart.get("title") or ""
+    if sub:
+        title = f"{title} — {sub}"
+    row = _section_header(ws, row, title)
+
+    axis = chart["nps_axis"]
+    matrix = chart["matrix"]
+    n = len(axis)
+
+    def _fmt_nps(v):
+        if v == 0.5:  return "1/2\""
+        if v == 0.75: return "3/4\""
+        if v == 1.5:  return "1-1/2\""
+        return f"{v}\""
+
+    # Subtitle row
+    if chart.get("subtitle"):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=min(n + 1, 16))
+        c = ws.cell(row=row, column=1, value=chart["subtitle"])
+        c.font = FONT_NOTE
+        c.alignment = LEFT
+        row += 1
+    if chart.get("resolved_family"):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=min(n + 1, 16))
+        c = ws.cell(row=row, column=1, value=f"For material family: {chart['resolved_family']}")
+        c.font = FONT_NOTE
+        c.alignment = LEFT
+        row += 1
+
+    # Header row — corner cell + branch NPS axis
+    corner = ws.cell(row=row, column=1, value="RUN ↓ / BRANCH →")
+    corner.font = FONT_HEADER
+    corner.fill = FILL_HEADER
+    corner.alignment = CENTER
+    corner.border = BORDER_HEAD
+    for i, v in enumerate(axis):
+        c = ws.cell(row=row, column=2 + i, value=_fmt_nps(v))
+        c.font = FONT_LABEL
+        c.fill = FILL_GRAY
+        c.alignment = CENTER
+        c.border = BORDER_ALL
+    row += 1
+
+    # Body rows
+    for ridx, mrow in enumerate(matrix):
+        # Run NPS label
+        rc = ws.cell(row=row, column=1, value=_fmt_nps(axis[ridx]))
+        rc.font = FONT_LABEL
+        rc.fill = FILL_GRAY
+        rc.alignment = CENTER
+        rc.border = BORDER_ALL
+        for cidx in range(n):
+            cell = ws.cell(row=row, column=2 + cidx)
+            if cidx < len(mrow):
+                code = mrow[cidx]
+                cell.value = code
+                cell.font = FONT_VALUE_BOLD
+                cell.alignment = CENTER
+                cell.border = BORDER_ALL
+                # Color cells by code
+                if code == "T":
+                    cell.fill = PatternFill("solid", fgColor="FFDBEAFE")
+                elif code == "RT":
+                    cell.fill = PatternFill("solid", fgColor="FFBFDBFE")
+                elif code == "W":
+                    cell.fill = PatternFill("solid", fgColor="FFFEF3C7")
+                elif code == "S":
+                    cell.fill = PatternFill("solid", fgColor="FFDCFCE7")
+                elif code == "H":
+                    cell.fill = PatternFill("solid", fgColor="FFFCE7F3")
+                elif code == "-":
+                    cell.fill = FILL_GRAY
+        row += 1
+
+    # Legend
+    row += 1
+    ws.cell(row=row, column=1, value="LEGEND:").font = FONT_LABEL
+    for i, (code, label) in enumerate(chart.get("legend", {}).items()):
+        col = 2 + i * 2
+        ws.cell(row=row, column=col, value=code).font = FONT_VALUE_BOLD
+        ws.cell(row=row, column=col + 1, value=label).font = FONT_VALUE
+    row += 2
+    return row
+
+
 def _build_footer(ws, row: int, ctx: dict) -> int:
-    row = _section_header(ws, row, "10. NOTES")
+    row = _section_header(ws, row, "11. NOTES")
     notes = [
         "Calculated wall thickness per ASME B31.3 Eq. 3a; mill tolerance 12.5%.",
         "Schedule selection per ASME B36.10M §9 (or B36.19M for stainless) — lightest WT ≥ Calc Thk.",
@@ -550,6 +643,9 @@ def build_workbook(
     widths = [28, 22, 16, 16, 16, 16, 16]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
+    # Branch chart can extend to column ~18 — give those compact widths.
+    for i in range(8, 20):
+        ws.column_dimensions[get_column_letter(i)].width = 8
 
     ctx = {
         "class_code":   class_code,
@@ -566,6 +662,7 @@ def build_workbook(
         "fitting_pipe":   fs.get("pipe"),
         "fitting_specs":  fs,
         "flange_extras":  fx,
+        "branch_chart":   cf.get("branch_chart"),
         "pt":             pt,
         "wt_rows":        wt_rows,
         "small_bore_sch": small_sch,
@@ -580,6 +677,7 @@ def build_workbook(
     row = _build_wall_thickness_table(ws, row, ctx)
     row = _build_pipe_and_fittings(ws, row, ctx)
     row = _build_flange_bolts_gasket(ws, row, ctx)
+    row = _build_branch_chart(ws, row, ctx)
     row = _build_footer(ws, row, ctx)
 
     buf = io.BytesIO()

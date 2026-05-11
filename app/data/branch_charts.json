@@ -1,0 +1,120 @@
+{
+  "_meta": {
+    "source": "Project Appendix-1 Branch Tables (per API RP 14E)",
+    "encoding": "Each row is the lower-triangular slice for that run-pipe NPS; column index i maps to nps_axis[i].",
+    "codes_legend_global": {
+      "T":  "Equal Tee",
+      "RT": "Reducing Tee",
+      "W":  "Weldolet",
+      "S":  "Sockolet / Reducing Saddle (per chart)",
+      "H":  "Threadolet",
+      "-":  "Not Allowed"
+    }
+  },
+  "charts": {
+    "chart_1": {
+      "id":         "chart-1",
+      "title":      "CHART-1 (CS, LTCS, SS, DSS, SDSS)",
+      "subtitle":   "Branch Table as per API RP 14E",
+      "applies_to": ["CS", "LTCS", "SS316", "SS316L", "SS304", "SS304L", "DSS", "SDSS",
+                     "CS NACE", "LTCS NACE", "SS316L NACE", "Titanium", "6 MO Tubing",
+                     "SS 316 Tubing", "Epoxy-Lined CS", "Copper"],
+      "legend":     {"W": "WELDOLET", "T": "TEE"},
+      "nps_axis":   [1, 1.5, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 30, 32],
+      "matrix": [
+        ["T"],
+        ["T","T"],
+        ["W","T","T"],
+        ["W","W","T","T"],
+        ["W","W","T","T","T"],
+        ["W","W","W","T","T","T"],
+        ["W","W","W","W","T","T","T"],
+        ["W","W","W","W","W","T","T","T"],
+        ["W","W","W","W","W","W","T","T","T"],
+        ["W","W","W","W","W","W","T","T","T","T"],
+        ["W","W","W","W","W","W","W","T","T","T","T"],
+        ["W","W","W","W","W","W","W","W","T","T","T","T"],
+        ["W","W","W","W","W","W","W","W","W","T","T","T","T"],
+        ["W","W","W","W","W","W","W","W","W","W","T","T","T","T"],
+        ["W","W","W","W","W","W","W","W","W","W","W","T","T","T","T"],
+        ["W","W","W","W","W","W","W","W","W","W","W","W","T","T","T","T"],
+        ["W","W","W","W","W","W","W","W","W","W","W","W","W","T","T","T","T"]
+      ]
+    },
+    "chart_2": {
+      "id":         "chart-2",
+      "title":      "CHART-2 (CS GALV)",
+      "subtitle":   "Galvanised carbon-steel branch table — small branches use threaded outlet",
+      "applies_to": ["Galvanised CS", "CS GALV"],
+      "legend":     {"H": "THREADOLET", "W": "WELDOLET", "T": "TEE"},
+      "nps_axis":   [1, 1.5, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24],
+      "matrix": [
+        ["T"],
+        ["T","T"],
+        ["H","T","T"],
+        ["H","H","T","T"],
+        ["H","H","H","T","T"],
+        ["H","H","H","T","T","T"],
+        ["H","H","H","W","T","T","T"],
+        ["H","H","H","W","T","T","T","T"],
+        ["H","H","H","W","W","T","T","T","T"],
+        ["H","H","H","W","W","T","T","T","T","T"],
+        ["H","H","H","W","W","T","T","T","T","T","T"],
+        ["H","H","H","W","W","W","T","T","T","T","T","T"],
+        ["H","H","H","W","W","W","T","T","T","T","T","T","T"],
+        ["H","H","H","W","W","W","W","T","T","T","T","T","T","T"]
+      ]
+    },
+    "chart_3": {
+      "id":         "chart-3",
+      "title":      "CHART-3 (CuNi)",
+      "subtitle":   "90/10 Copper-Nickel branch table — small branches use sockolet",
+      "applies_to": ["90/10 CuNi", "CuNi"],
+      "legend":     {"S": "SOCKOLET", "W": "WELDOLET", "T": "TEE BW"},
+      "nps_axis":   [1, 1.5, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36],
+      "matrix": [
+        ["T"],
+        ["T","T"],
+        ["S","T","T"],
+        ["S","S","T","T"],
+        ["S","S","T","T","T"],
+        ["S","S","W","T","T","T"],
+        ["S","S","W","W","T","T","T"],
+        ["S","S","W","W","W","T","T","T"],
+        ["S","S","W","W","W","W","T","T","T"],
+        ["S","S","W","W","W","W","T","T","T","T"],
+        ["S","S","W","W","W","W","W","T","T","T","T"],
+        ["S","S","W","W","W","W","W","W","T","T","T","T"],
+        ["S","S","W","W","W","W","W","W","W","T","T","T","T"],
+        ["S","S","W","W","W","W","W","W","W","W","T","T","T","T"],
+        ["S","S","W","W","W","W","W","W","W","W","W","T","T","T","T"],
+        ["S","S","W","W","W","W","W","W","W","W","W","W","T","T","T","T"],
+        ["S","S","W","W","W","W","W","W","W","W","W","W","W","T","T","T","T"]
+      ]
+    },
+    "chart_4": {
+      "id":         "chart-4",
+      "title":      "CHART-4 (GRE)",
+      "subtitle":   "Glass-Reinforced Epoxy — saddle / reducing-tee branches per manufacturer",
+      "applies_to": ["Glass-Reinforced Epoxy", "GRE", "CPVC"],
+      "legend":     {"T": "EQUAL TEE", "RT": "REDUCING TEE", "S": "REDUCING SADDLE", "-": "NOT ALLOWED"},
+      "nps_axis":   [0.75, 1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24],
+      "matrix": [
+        ["-"],
+        ["-","T"],
+        ["-","RT","T"],
+        ["-","RT","RT","T"],
+        ["-","RT","RT","RT","T"],
+        ["-","S","S","RT","RT","T"],
+        ["-","S","S","RT","RT","RT","T"],
+        ["-","S","S","RT","RT","RT","RT","T"],
+        ["-","S","S","RT","RT","RT","RT","RT","T"],
+        ["-","S","S","RT","RT","RT","RT","RT","RT","T"],
+        ["-","S","S","RT","RT","RT","RT","RT","RT","RT","T"],
+        ["-","S","S","RT","RT","RT","RT","RT","RT","RT","RT","T"],
+        ["-","S","S","RT","RT","RT","RT","RT","RT","RT","RT","RT","T"],
+        ["-","S","S","RT","RT","RT","RT","RT","RT","RT","RT","RT","RT","T"]
+      ]
+    }
+  }
+}

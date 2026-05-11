@@ -24,7 +24,7 @@ from functools import lru_cache
 from typing import Optional
 
 from app.config import settings
-from app.services import pt_lookup, stress_lookup, y_lookup, fitting_specs, flange_specs
+from app.services import pt_lookup, stress_lookup, y_lookup, fitting_specs, flange_specs, branch_chart
 
 
 class ResolutionError(ValueError):
@@ -225,4 +225,5 @@ def _build_code_factors(material: str, pt: Optional[dict], rating: Optional[str]
             (fitting_specs.lookup(material, rating) or {}).get("flange"),
             class_code,
         ),
+        "branch_chart":    branch_chart.build(material),
     }

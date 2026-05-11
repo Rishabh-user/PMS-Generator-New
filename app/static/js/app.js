@@ -18,12 +18,6 @@ const API = {
     npsDimensions:    () => fetch('/api/nps-dimensions'),
     pipeDimensions:   () => fetch('/api/pipe-dimensions'),
     pipeDimensionsSs: () => fetch('/api/pipe-dimensions-ss'),
-    aiStatus:       () => fetch('/api/ai/status'),
-    aiPmsNotes:     (body) => fetch('/api/ai/pms-notes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-    }),
 };
 
 // ---------------------------------------------------------------------------
@@ -846,11 +840,84 @@ function renderPipeFittingsTab(state, designPbarg, designTc) {
     small.innerHTML = buildBody(smallSch);
     large.innerHTML = buildBody(largeSch);
 
-    // Branch-chart reference. Until we wire a per-class chart map, surface
-    // the project convention "Ref. APPENDIX-1, Chart 1".
+    // Branch Connection Chart — render the full Appendix-1 triangular
+    // matrix per the material family (Chart 1/2/3/4 picked server-side).
     if (branch) {
-        branch.textContent = 'Ref. APPENDIX-1, Chart 1';
+        renderBranchChart(branch, (state.codeFactors || {}).branch_chart);
     }
+}
+
+
+function _branchCellClass(code) {
+    // Color-code cells by fitting type for visual scanning.
+    if (code === 'T')  return 'bc-tee';
+    if (code === 'RT') return 'bc-rtee';
+    if (code === 'W')  return 'bc-weldolet';
+    if (code === 'S')  return 'bc-sockolet';
+    if (code === 'H')  return 'bc-threadolet';
+    if (code === '-')  return 'bc-na';
+    return '';
+}
+
+
+function _fmtNps(n) {
+    // 0.5 → 1/2", 0.75 → 3/4", 1.5 → 1-1/2", integers → 1", 2", 24"
+    if (n === 0.5) return '½"';
+    if (n === 0.75) return '¾"';
+    if (n === 1.5) return '1½"';
+    return `${n}"`;
+}
+
+
+function renderBranchChart(host, chart) {
+    if (!chart || !chart.matrix || !chart.nps_axis) {
+        host.innerHTML = '<div class="bore-info-bar-empty">No branch chart mapped for this material.</div>';
+        return;
+    }
+    const axis = chart.nps_axis;
+    const matrix = chart.matrix;
+
+    // Header row — branch NPS along the top
+    const headerCells = axis.map(n => `<th class="bc-axis-col">${_fmtNps(n)}</th>`).join('');
+
+    // Body — row for each run pipe NPS; only fill cells up to header_idx (triangular)
+    const bodyRows = matrix.map((row, ridx) => {
+        const runNps = axis[ridx];
+        const cells = axis.map((_, cidx) => {
+            if (cidx < row.length) {
+                const code = row[cidx];
+                return `<td class="bc-cell ${_branchCellClass(code)}">${escapeHtml(code)}</td>`;
+            }
+            return '<td class="bc-cell bc-empty"></td>';
+        }).join('');
+        return `<tr><th class="bc-axis-row">${_fmtNps(runNps)}</th>${cells}</tr>`;
+    }).join('');
+
+    // Legend
+    const legendItems = Object.entries(chart.legend || {})
+        .map(([code, label]) =>
+            `<span class="bc-legend-item"><span class="bc-legend-code ${_branchCellClass(code)}">${escapeHtml(code)}</span>${escapeHtml(label)}</span>`)
+        .join('');
+
+    host.innerHTML = `
+        <div class="bc-title-bar">
+            <div class="bc-title">${escapeHtml(chart.title || '')}</div>
+            ${chart.subtitle ? `<div class="bc-subtitle">${escapeHtml(chart.subtitle)}</div>` : ''}
+            ${chart.resolved_family ? `<div class="bc-family">For material family: <strong>${escapeHtml(chart.resolved_family)}</strong></div>` : ''}
+        </div>
+        <div class="bc-scroll">
+            <table class="bc-table">
+                <thead>
+                    <tr>
+                        <th class="bc-corner">RUN ↓ / BRANCH →</th>
+                        ${headerCells}
+                    </tr>
+                </thead>
+                <tbody>${bodyRows}</tbody>
+            </table>
+        </div>
+        <div class="bc-legend">${legendItems}</div>
+    `;
 }
 
 // ---------------------------------------------------------------------------
@@ -964,158 +1031,6 @@ function renderTab5Components(state) {
     renderBoltsCard(state);
     renderSpectacleCard(state);
     renderValvesCard(state);
-}
-
-// ---------------------------------------------------------------------------
-// Tab 5 — AI Engineering Notes
-//
-// One-shot fetch on user click (so we don't burn API tokens on every input
-// edit). Server returns {ok: true, notes: [...]} or {ok: false, error: ...}.
-// The button stays available for re-generation after design changes.
-// ---------------------------------------------------------------------------
-function _aiNoteCardClass(category) {
-    switch ((category || '').toLowerCase()) {
-        case 'compliance':   return 'flag-card-mandatory';
-        case 'construction': return 'flag-card-warning';
-        case 'procurement':  return 'flag-card-note';
-        case 'verification':
-        default:             return 'flag-card-note';
-    }
-}
-
-function _aiBadgeClass(category) {
-    switch ((category || '').toLowerCase()) {
-        case 'compliance':   return 'flag-badge-mandatory';
-        case 'construction': return 'flag-badge-warning';
-        case 'procurement':  return 'flag-badge-note';
-        case 'verification':
-        default:             return 'flag-badge-note';
-    }
-}
-
-async function checkAiAvailable() {
-    try {
-        const res = await API.aiStatus();
-        if (!res.ok) return false;
-        const j = await res.json();
-        return !!j.available;
-    } catch {
-        return false;
-    }
-}
-
-function renderAiNotesEmpty(message) {
-    const body = document.getElementById('rAiNotesBody');
-    if (!body) return;
-    body.innerHTML = `<div class="ai-notes-hint">${escapeHtml(message)}</div>`;
-}
-
-function renderAiNotesLoading() {
-    const body = document.getElementById('rAiNotesBody');
-    if (!body) return;
-    body.innerHTML = `<div class="ai-notes-loading"><div class="spinner" style="width:24px;height:24px;border-width:3px"></div><span>Asking Claude…</span></div>`;
-}
-
-function renderAiNotesError(message) {
-    const body = document.getElementById('rAiNotesBody');
-    if (!body) return;
-    body.innerHTML = `<div class="ai-notes-error"><strong>AI request failed.</strong> ${escapeHtml(message)}</div>`;
-}
-
-function renderAiNotes(payload) {
-    const body = document.getElementById('rAiNotesBody');
-    if (!body) return;
-    const notes = (payload && payload.notes) || [];
-    if (!notes.length) {
-        renderAiNotesEmpty('No notes returned. Try generating again.');
-        return;
-    }
-
-    const usage = payload.usage || {};
-    const usageLine = (usage.input_tokens || usage.output_tokens)
-        ? `<div class="ai-notes-usage">Model: ${escapeHtml(payload.model || '?')} · in: ${usage.input_tokens ?? '?'} · out: ${usage.output_tokens ?? '?'}${usage.cache_read ? ' · cached: ' + usage.cache_read : ''} tokens</div>`
-        : '';
-
-    body.innerHTML = notes.map(n => `
-        <div class="flag-card ${_aiNoteCardClass(n.category)}">
-            <div class="flag-card-header">
-                <span class="flag-badge ${_aiBadgeClass(n.category)}">${escapeHtml(n.category || 'note')}</span>
-                <span class="flag-title">${escapeHtml(n.title || '')}</span>
-            </div>
-            <div class="flag-body">${escapeHtml(n.body || '')}</div>
-        </div>
-    `).join('') + usageLine;
-}
-
-function wireAiNotes(state) {
-    const btn = document.getElementById('rAiNotesBtn');
-    const card = document.getElementById('rAiNotesCard');
-    if (!btn || !card) return;
-
-    // Ensure we don't stack click handlers across re-renders.
-    const fresh = btn.cloneNode(true);
-    btn.parentNode.replaceChild(fresh, btn);
-
-    fresh.addEventListener('click', async () => {
-        // Capture the *current* design conditions at click time (user
-        // may have edited Tab 2 since opening the report).
-        const dp = parseFloat(document.getElementById('rDesignPressure')?.value);
-        const dt = parseFloat(document.getElementById('rDesignTemperature')?.value);
-        const md = parseFloat(document.getElementById('rMdmt')?.value);
-        const joint = document.getElementById('rJointType')?.value || 'Seamless';
-
-        const cf = state.codeFactors || {};
-        const stressLabel = cf.stress_table ? cf.stress_table.label : null;
-        const fittingFamily = cf.fitting_specs ? cf.fitting_specs.family : null;
-
-        renderAiNotesLoading();
-        fresh.disabled = true;
-
-        try {
-            const res = await API.aiPmsNotes({
-                class_code:         state.classCode,
-                rating:             state.rating,
-                material:           state.material,
-                ca:                 state.ca,
-                service:            state.service || '',
-                design_p_barg:      Number.isNaN(dp) ? null : dp,
-                design_t_c:         Number.isNaN(dt) ? null : dt,
-                mdmt_c:             Number.isNaN(md) ? null : md,
-                joint_type:         joint,
-                stress_table_label: stressLabel,
-                fitting_family:     fittingFamily,
-            });
-            const data = await res.json();
-            if (!data.ok) {
-                renderAiNotesError(data.error || `HTTP ${res.status}`);
-            } else {
-                renderAiNotes(data);
-            }
-        } catch (e) {
-            renderAiNotesError(`Network error: ${e}`);
-        } finally {
-            fresh.disabled = false;
-        }
-    });
-
-    // First-paint state — invite the user to click the button.
-    renderAiNotesEmpty('Click "Generate Notes" to have Claude review this PMS configuration and surface engineering considerations.');
-}
-
-async function setupAiNotes(state) {
-    const card = document.getElementById('rAiNotesCard');
-    const btn  = document.getElementById('rAiNotesBtn');
-    if (!card || !btn) return;
-    const available = await checkAiAvailable();
-    if (!available) {
-        btn.disabled = true;
-        btn.title    = 'ANTHROPIC_API_KEY not configured';
-        renderAiNotesEmpty('AI notes unavailable — set ANTHROPIC_API_KEY in your .env file and restart the server to enable Claude-generated engineering notes.');
-        return;
-    }
-    btn.disabled = false;
-    btn.title    = 'Ask Claude for engineering notes on this configuration';
-    wireAiNotes(state);
 }
 
 function renderTagLegend(state) {
@@ -1753,7 +1668,6 @@ function showReport(state) {
     populateStandardBar(state);
     wireReportInputs(state);
     wireReportTabs();
-    setupAiNotes(state);
     // Wall Thickness table + formula card both depend on the NPS list
     // and B36.10M Table 2-1 (cached after first fetch). wireReportInputs
     // already fired a synchronous refresh above before these resolved,
