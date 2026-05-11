@@ -74,6 +74,30 @@ def _is_duplex_family(material: str) -> bool:
     return _is_dss(material) or _is_sdss(material)
 
 
+def _is_soft_gasket_material(material: str) -> bool:
+    """Galvanized or coated/lined CS — water / utility service. Project
+    spec: 3 mm neoprene/EPDM rubber flat ring per ASME B 16.21 (verified
+    against PMS-F.pdf classes A3/A4/B4/D4/A5/A6).
+
+    Matches:
+      - 'CS GALV'                  (digits 3, 4, 5)
+      - 'CS GALV (Valve: SS)'      (digit 3/4 variants)
+      - 'CS - Epoxy Lined'         (digit 6)
+      - 'CS Internally Coated'     (digit 6 alt)
+      - 'Epoxy-Lined CS'           (fitting_specs family label)
+    """
+    if not material:
+        return False
+    u = material.upper()
+    if "GALV" in u:
+        return True
+    if "EPOXY" in u and ("LINED" in u or "LINE" in u):
+        return True
+    if "INTERNALLY COATED" in u:
+        return True
+    return False
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Face type — ASME B16.5
 # ──────────────────────────────────────────────────────────────────────
@@ -185,6 +209,15 @@ def _gasket_materials(material: str) -> dict:
 
 
 def gasket(face: str, material: str) -> dict:
+    # Galvanized / epoxy-lined CS classes (A3, A4, B4, D4, A5, A6 etc.) are
+    # low-pressure water/utility services — project §5.5 specifies a 3 mm
+    # neoprene/EPDM rubber flat ring per ASME B 16.21, regardless of face
+    # (these classes don't appear at 900#+ so RTJ context is moot).
+    if _is_soft_gasket_material(material):
+        return {
+            "type": "Soft Rubber Flat Ring",
+            "spec": "3 mm thick flat ring of neoprene / EPDM rubber as per ASME B 16.21",
+        }
     mats = _gasket_materials(material)
     if face == "RTJ":
         ring = mats["oct_text"]

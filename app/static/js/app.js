@@ -490,30 +490,53 @@ function _materialUsesStainlessSchedules(material) {
 // nothing qualifies, so the engineer sees the gap rather than '—'.
 function pickSchedule(npsDecimal, calcThkMm, material) {
     const useSs = _materialUsesStainlessSchedules(material);
-    const tableObj = useSs ? window._b3619 : window._b3610;
-    const idx = tableObj && tableObj.by_nps;
-    if (!idx) return null;
-    const rows = idx[npsDecimal];
-    if (!rows || !rows.length) return null;
     if (calcThkMm == null || Number.isNaN(calcThkMm)) return null;
 
-    // Rows are sorted ascending by WT.
-    let pick = rows.find(r => r.wt_mm >= calcThkMm) || null;
+    // Stainless materials: try B36.19M first (5S / 10S / 40S / 80S).
+    // B36.19M tops out at 80S — high-pressure stainless classes (e.g. G10)
+    // can have a calc thk exceeding that, in which case we fall back to
+    // B36.10M's heavier walls (SCH 160 / XXS) because the OD is identical
+    // (A312 stainless pipe can be specified to B36.10M wall per project
+    // practice). Without this fallback the picker silently lands on a
+    // wall THINNER than required.
+    const primaryTable = useSs ? window._b3619 : window._b3610;
+    const fallbackTable = useSs ? window._b3610 : null;
+
+    function pickFrom(tableObj) {
+        if (!tableObj || !tableObj.by_nps) return null;
+        const rows = tableObj.by_nps[npsDecimal];
+        if (!rows || !rows.length) return null;
+        // Rows are sorted ascending by WT.
+        const found = rows.find(r => r.wt_mm >= calcThkMm);
+        return found || null;
+    }
+
+    let pick = pickFrom(primaryTable);
+    let usedTable = useSs ? 'B36.19M' : 'B36.10M';
+    if (!pick && fallbackTable) {
+        pick = pickFrom(fallbackTable);
+        if (pick) usedTable = 'B36.10M (fallback from B36.19M)';
+    }
+
     let status = 'OK';
     if (!pick) {
+        // No wall in either table covers calcThk — flag NOT OK and report
+        // the heaviest available from the heavier table (fallback if any,
+        // else primary). Avoids misleading "NOT OK at 80S 3.91" when the
+        // user should see "NOT OK at XXS 7.82".
+        const heavy = fallbackTable || primaryTable;
+        const rows = (heavy && heavy.by_nps && heavy.by_nps[npsDecimal]) || [];
+        if (!rows.length) return null;
         pick = rows[rows.length - 1];
         status = 'NOT OK';
     }
 
-    // Display rule: numeric schedule if present, else identification
-    // (STD / XS / XXS from B36.10M — B36.19M rows always have a schedule).
     const display = pick.schedule != null ? pick.schedule : (pick.identification || '—');
-
     return {
         sch_display: String(display),
         wt_mm:       pick.wt_mm,
         status,
-        table:       useSs ? 'B36.19M' : 'B36.10M',
+        table:       usedTable,
         row:         pick,
     };
 }
@@ -713,6 +736,9 @@ function _dominantScheduleInRange(rows, npsLo, npsHi) {
         const nps = parseFloat(r.nps);
         if (Number.isNaN(nps) || nps < npsLo || nps > npsHi) continue;
         if (!r.sch_display) continue;
+        // Skip NOT OK rows — they don't carry a standard schedule; the
+        // engineer specs a custom wall on those NPS sizes.
+        if (r.sch_status === 'NOT OK') continue;
         counts[r.sch_display] = (counts[r.sch_display] || 0) + 1;
     }
     let best = null, bestN = 0;
@@ -1029,7 +1055,20 @@ function renderTab5Components(state) {
 // already-resolved `state` — no extra API calls.
 // ---------------------------------------------------------------------------
 
-const DS_NPS_AXIS = [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32];
+// NPS axis is derived from whatever is in nps_dimensions.json — no hardcoded
+// ceiling, so adding NPS 36 / 42 / 48 to the data file flows through to the
+// datasheet automatically.
+function _dsNpsAxis() {
+    const dims = window._npsDimensions;
+    if (dims && dims.rows && dims.rows.length) {
+        return dims.rows
+            .map(r => r.nps_decimal)
+            .filter(v => typeof v === 'number' && !Number.isNaN(v))
+            .sort((a, b) => a - b);
+    }
+    // Fallback used only if NPS dimensions haven't loaded yet.
+    return [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 36];
+}
 
 function _dsFmtNps(n) {
     if (n === 0.5)  return '0.5';
@@ -1073,13 +1112,84 @@ function _dsPipeMoc(specs, material, isLarge) {
     return specs.pipe || '—';
 }
 
+
+// Connection style by material — galvanized CS uses Screwed (SCRD) for
+// small bore (water/utility duty), butt-weld for large bore. Everyone
+// else uses butt-weld both bores (seamless small / welded large).
+function _dsConnectionStyle(material) {
+    if (/GALV/i.test(material || '')) {
+        return {
+            sm_type: 'Screwed (SCRD), #3000',
+            lg_type: 'Butt Weld (SCH to match pipe), Seamless',
+        };
+    }
+    return {
+        sm_type: 'Butt Weld (SCH to match pipe), Seamless',
+        lg_type: 'Butt Weld (SCH to match pipe), Welded',
+    };
+}
+
+
+// Component spec table — material-aware. SCRD families pull forged-fitting
+// standards (B16.11) on small bore; BW families use B16.9 both bores. The
+// MOC strings come straight from fitting_specs so adding a new material
+// family in that file flows through automatically.
+function _dsComponents(material, fs) {
+    const isGalv     = /GALV/i.test(material || '');
+    const fittingMoc = fs.fittings || '—';
+    const flangeMoc  = fs.flange || '—';
+    const branchMoc  = fs.branch_outlet || '—';
+    const pipeMoc    = fs.pipe || '—';
+
+    if (isGalv) {
+        return {
+            sm_moc: flangeMoc,                                  // forged + galv from fitting_specs
+            lg_moc: fittingMoc,                                  // wrought butt-weld + galv
+            rows: [
+                { name: 'Elbow',        sm: 'ASME B 16.11', lg: 'ASME B 16.9' },
+                { name: 'Tee',          sm: 'ASME B 16.11', lg: 'ASME B 16.9' },
+                { name: 'Red.',         sm: 'ASME B 16.11', lg: 'ASME B 16.9' },
+                { name: 'Cap',          sm: 'ASME B 16.11', lg: 'ASME B 16.9' },
+                { name: 'Coupl.',       sm: 'ASME B 16.11', lg: '' },
+                { name: 'Hex Hd. Plug', sm: 'Hex Head Plug, ASME B 16.11', lg: '' },
+                { name: 'Union',        sm: 'ASME B 16.11', lg: 'BS 3799' },
+                { name: 'Olet',         sm: 'MSS SP-97',    lg: branchMoc },
+                { name: 'Swage',        sm: `MSS SP-95, MOC same as pipe`, lg: '' },
+            ],
+        };
+    }
+    return {
+        sm_moc: fittingMoc,
+        lg_moc: fittingMoc,
+        rows: [
+            { name: 'Elbow',     sm: 'ASME B 16.9',                lg: 'ASME B 16.9' },
+            { name: 'Tee',       sm: 'ASME B 16.9',                lg: 'ASME B 16.9' },
+            { name: 'Red.',      sm: 'ASME B 16.9',                lg: 'ASME B 16.9' },
+            { name: 'Cap',       sm: 'ASME B 16.9',                lg: 'ASME B 16.9' },
+            { name: 'Hex Hd. Plug', sm: 'Hex Head Plug, ASME B 16.11', lg: '' },
+            { name: 'Weldolet',  sm: branchMoc,                    lg: branchMoc },
+        ],
+    };
+}
+
+
+// Flange TYPE — split for galv (Screwed SCRD + WN), single (WN) otherwise.
+function _dsFlangeType(material) {
+    if (/GALV/i.test(material || '')) {
+        return { sm: 'Screwed (SCRD)', lg: 'WN' };
+    }
+    return { sm: 'WN', lg: 'WN' };
+}
+
 function _dsPickSch(rows, lo, hi) {
     const counts = {};
     for (const r of rows) {
         const npsNum = parseFloat(r.nps);
-        if (!r.sch || Number.isNaN(npsNum)) continue;
+        if (!r.sch_display || Number.isNaN(npsNum)) continue;
+        // Project rule: NOT OK rows are excluded from the bore-mode pick.
+        if (r.sch_status === 'NOT OK') continue;
         if (npsNum >= lo && npsNum <= hi) {
-            counts[r.sch] = (counts[r.sch] || 0) + 1;
+            counts[r.sch_display] = (counts[r.sch_display] || 0) + 1;
         }
     }
     let best = null, bestCount = 0;
@@ -1131,24 +1241,33 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const pipeMocLg = _dsPipeMoc(fs, state.material, true);
 
     // ── Pipe Data table cells (size / OD / Sch / WT for each NPS) ──
-    const npsCellsRow = DS_NPS_AXIS.map(n => `<td>${_dsFmtNps(n)}</td>`).join('');
-    const odCellsRow  = DS_NPS_AXIS.map(n => {
+    const dsAxis = _dsNpsAxis();
+    const npsCellsRow = dsAxis.map(n => `<td>${_dsFmtNps(n)}</td>`).join('');
+    const odCellsRow  = dsAxis.map(n => {
         const r = rowsByNps[n];
         return `<td>${r ? _dsFmt(r.od_mm, 1) : '—'}</td>`;
     }).join('');
-    const schCellsRow = DS_NPS_AXIS.map(n => {
+    const schCellsRow = dsAxis.map(n => {
         const r = rowsByNps[n];
-        return `<td>${r && r.sch ? escapeHtml(r.sch) : '—'}</td>`;
+        if (!r) return '<td>—</td>';
+        // Project rule: NOT OK rows show '—' for SCH and echo calc_thk for WT.
+        if (r.sch_status === 'NOT OK') return '<td>—</td>';
+        return `<td>${r.sch_display ? escapeHtml(r.sch_display) : '—'}</td>`;
     }).join('');
-    const wtCellsRow  = DS_NPS_AXIS.map(n => {
+    const wtCellsRow  = dsAxis.map(n => {
         const r = rowsByNps[n];
-        return `<td>${r && r.sel_thk_mm != null ? _dsFmt(r.sel_thk_mm, 2) : '—'}</td>`;
+        if (!r) return '<td>—</td>';
+        if (r.sch_status === 'NOT OK') {
+            return `<td>${r.calc_thk_mm != null ? _dsFmt(r.calc_thk_mm, 2) : '—'}</td>`;
+        }
+        return `<td>${r.sel_thk_mm != null ? _dsFmt(r.sel_thk_mm, 2) : '—'}</td>`;
     }).join('');
 
-    // Split TYPE / MOC / Ends across small + large bore columns
-    // Small bore = NPS ≤ 2 (cols 1–5 in our 21-NPS axis), Large = NPS ≥ 2.5 (cols 6–21)
-    const smallCols = 5;
-    const largeCols = DS_NPS_AXIS.length - smallCols;
+    // Split TYPE / MOC / Ends across small + large bore columns.
+    // Small bore = NPS ≤ 2, Large = NPS ≥ 2.5 — derived from the live axis
+    // so adding NPS 36 / 42 / 48 to the data file just extends the large group.
+    const smallCols = dsAxis.filter(n => n <= 2).length;
+    const largeCols = dsAxis.length - smallCols;
     const typeRow = `
         <td colspan="${smallCols}">${escapeHtml(pipeType.sml)}</td>
         <td colspan="${largeCols}">${escapeHtml(pipeType.lrg)}</td>`;
@@ -1181,11 +1300,14 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const sp = fx.spectacle || {};
 
     // Flange
-    const flangeFace = (fx.face || {}).label || '—';
-    const flangeType = (fx.type || {}).type || '—';
     const ratingNum  = state.rating || '—';
     const faceCode   = (fx.face || {}).code || '';
     const faceFull   = `${ratingNum} ${faceCode}, Serrated Finish`;
+    const flangeTypeSplit = _dsFlangeType(state.material);
+
+    // Fittings — material-aware columns + standards
+    const connStyle  = _dsConnectionStyle(state.material);
+    const components = _dsComponents(state.material, fs);
 
     const cleanMat = (typeof cleanMaterial === 'function') ? cleanMaterial(state.material) : state.material;
 
@@ -1252,11 +1374,11 @@ function renderDatasheetTab(state, designPbarg, designTc) {
             <!-- ── Pipe Data ── -->
             <table class="ds-table ds-pipe-tbl">
                 <tr class="ds-section-row">
-                    <td colspan="${DS_NPS_AXIS.length + 1}">Pipe Data</td>
+                    <td colspan="${dsAxis.length + 1}">Pipe Data</td>
                 </tr>
                 <tr>
                     <td class="ds-label">Code</td>
-                    <td colspan="${DS_NPS_AXIS.length}" class="ds-value">ASME B 36.10M</td>
+                    <td colspan="${dsAxis.length}" class="ds-value">ASME B 36.10M</td>
                 </tr>
                 <tr>
                     <td class="ds-label">Size (in)</td>${npsCellsRow}
@@ -1286,27 +1408,34 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 <tr class="ds-section-row"><td colspan="3">Fittings Data</td></tr>
                 <tr>
                     <td class="ds-label">TYPE</td>
-                    <td class="ds-value">Butt Weld (SCH to match pipe), Seamless</td>
-                    <td class="ds-value">Butt Weld (SCH to match pipe), Welded</td>
+                    <td class="ds-value">${escapeHtml(connStyle.sm_type)}</td>
+                    <td class="ds-value">${escapeHtml(connStyle.lg_type)}</td>
                 </tr>
                 <tr>
                     <td class="ds-label">MOC</td>
-                    <td colspan="2" class="ds-value"><strong>${escapeHtml(fittingsMoc)}</strong></td>
+                    <td class="ds-value"><strong>${escapeHtml(components.sm_moc)}</strong></td>
+                    <td class="ds-value"><strong>${escapeHtml(components.lg_moc)}</strong></td>
                 </tr>
-                <tr><td class="ds-label">Elbow</td><td colspan="2" class="ds-value">ASME B 16.9</td></tr>
-                <tr><td class="ds-label">Tee</td><td colspan="2" class="ds-value">ASME B 16.9</td></tr>
-                <tr><td class="ds-label">Red.</td><td colspan="2" class="ds-value">ASME B 16.9</td></tr>
-                <tr><td class="ds-label">Cap</td><td colspan="2" class="ds-value">ASME B 16.9</td></tr>
-                <tr><td class="ds-label">Plug</td><td colspan="2" class="ds-value">Hex Head Plug, ASME B 16.11</td></tr>
-                <tr><td class="ds-label">Weldolet</td><td colspan="2" class="ds-value">${escapeHtml(branchMoc)}</td></tr>
+                ${components.rows.map(row => `
+                    <tr>
+                        <td class="ds-label">${escapeHtml(row.name)}</td>
+                        <td class="ds-value">${row.sm ? escapeHtml(row.sm) : '—'}</td>
+                        <td class="ds-value">${row.lg ? escapeHtml(row.lg) : '—'}</td>
+                    </tr>
+                `).join('')}
             </table>
 
             <!-- ── Flange ── -->
             <table class="ds-table">
-                <tr class="ds-section-row"><td colspan="2">Flange</td></tr>
-                <tr><td class="ds-label">MOC</td><td class="ds-value"><strong>${escapeHtml(flangeMoc)}</strong></td></tr>
-                <tr><td class="ds-label">FACE</td><td class="ds-value">${escapeHtml(faceFull)}</td></tr>
-                <tr><td class="ds-label">TYPE</td><td class="ds-value">${escapeHtml(flangeType)}</td></tr>
+                <tr class="ds-section-row"><td colspan="3">Flange</td></tr>
+                <tr>
+                    <td class="ds-label">TYPE</td>
+                    <td class="ds-value">${escapeHtml(flangeTypeSplit.sm)}</td>
+                    <td class="ds-value">${escapeHtml(flangeTypeSplit.lg)}</td>
+                </tr>
+                <tr><td class="ds-label">MOC</td><td colspan="2" class="ds-value"><strong>${escapeHtml(flangeMoc)}</strong></td></tr>
+                <tr><td class="ds-label">FACE</td><td colspan="2" class="ds-value">${escapeHtml(faceFull)}</td></tr>
+                <tr><td class="ds-label">STD</td><td colspan="2" class="ds-value">ASME B 16.5</td></tr>
             </table>
 
             <!-- ── Spectacle Blind / Spacer Blinds ── -->
@@ -1396,10 +1525,17 @@ function populateWallThicknessTable(state, designPbarg, designTc) {
     if (computed) {
         tbody.innerHTML = computed.map(r => {
             const validClass  = r.validity === 'ALERT' ? 'wt-alert' : (r.validity === 'OK' ? 'wt-ok' : '');
-            const schDisp     = r.sch_display != null ? r.sch_display : blank;
-            const selThkDisp  = r.sel_thk_mm != null ? r.sel_thk_mm.toFixed(2) : blank;
+            const notOk       = r.sch_status === 'NOT OK';
+            // Per project rule: when the standard schedule table cannot meet
+            // the calc thk, the SCH cell is blanked and SEL.THK echoes the
+            // calc thk rounded to 2 dp — engineer specs a custom wall.
+            const schDisp     = notOk ? '—'
+                              : (r.sch_display != null ? r.sch_display : blank);
+            const selThkDisp  = notOk
+                              ? (r.calc_thk_mm != null ? r.calc_thk_mm.toFixed(2) : blank)
+                              : (r.sel_thk_mm != null ? r.sel_thk_mm.toFixed(2) : blank);
             const statusDisp  = r.sch_status != null ? r.sch_status : blank;
-            const statusClass = r.sch_status === 'OK' ? 'wt-ok' : (r.sch_status === 'NOT OK' ? 'wt-alert' : '');
+            const statusClass = r.sch_status === 'OK' ? 'wt-ok' : (notOk ? 'wt-alert' : '');
 
             return `
                 <tr>

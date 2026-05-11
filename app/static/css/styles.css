@@ -421,13 +421,11 @@ body {
     letter-spacing: 0.03em;
 }
 
-/* Make report tabs sticky to the dashboard-main top */
+/* Report tabs sticky inside dashboard-main — sit just below the top-nav. */
 .dashboard-main .report-tabs {
     position: sticky;
-    top: 0;
+    top: 68px;
     z-index: 50;
-    background: var(--bg);
-    padding-top: 4px;
 }
 
 /* Responsive: collapse sidebar below 1024px */
@@ -1538,37 +1536,42 @@ label.multi-select-option > span { flex: 1; }
 .kv-tag-inline.active  { color: var(--text-muted); font-style: italic; font-weight: 500; }
 .kv-tag-inline.dim     { color: var(--text-muted); font-style: italic; font-weight: 500; }
 
-/* ----- Report tab navigation (P-T / Schedule / Materials / Components) ----- */
+/* ----- Report tab navigation (5 tabs, single row, equal-width) ----- */
 .report-tabs {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 4px;
     background: #ffffff;
     border: 1px solid var(--border-card);
     border-radius: var(--radius-lg);
-    padding: 6px;
-    margin-bottom: 24px;
+    padding: 4px;
+    margin-bottom: 20px;
     box-shadow: var(--shadow);
     position: sticky;
-    top: 76px;
+    top: 76px;            /* clear the 68px top-nav with a 8px gap */
     z-index: 10;
 }
 .report-tab {
+    flex: 1 1 0;
+    min-width: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 10px;
-    padding: 14px 18px;
+    gap: 8px;
+    padding: 11px 8px;
     border: none;
     background: transparent;
     border-radius: var(--radius);
     font-family: inherit;
-    font-size: 0.92rem;
+    font-size: 0.82rem;
     font-weight: 600;
     color: var(--text-muted);
     cursor: pointer;
     transition: background 0.15s, color 0.15s, border-color 0.15s;
     border-bottom: 3px solid transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .report-tab:hover {
     background: #f8fafc;
@@ -1583,12 +1586,12 @@ label.multi-select-option > span { flex: 1; }
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
     border-radius: 50%;
     background: #cbd5e1;
     color: #ffffff;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     font-weight: 700;
     flex-shrink: 0;
 }
@@ -1707,51 +1710,44 @@ label.multi-select-option > span { flex: 1; }
 /* ================================================================
    PMS CODE BANNER — Clean professional style
    ================================================================ */
+/* Compact horizontal banner — sits above tabs in dashboard-main.
+   Sidebar already shows the prominent class-code card, so this is just
+   an anchoring strip with pills + the internal PMS-X id. */
 .pms-code-banner {
     background: #ffffff;
     border: 1px solid var(--border);
-    border-radius: var(--radius-xl);
-    padding: 32px 40px;
-    margin-bottom: 24px;
-    text-align: center;
-    box-shadow: var(--shadow-md);
-    position: relative;
-    overflow: hidden;
-}
-.pms-code-banner::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 4px;
-    background: #0e3a5c;
+    border-radius: var(--radius);
+    padding: 10px 16px;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    box-shadow: var(--shadow);
+    flex-wrap: wrap;
 }
 .pms-banner-header {
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 2.5px;
-    margin-bottom: 6px;
+    display: none;   /* sidebar already labels this */
 }
 .pms-banner-code {
-    font-size: 2.8rem;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 1.1rem;
     font-weight: 800;
     color: #0e3a5c;
-    letter-spacing: 4px;
-    margin-bottom: 16px;
+    letter-spacing: 0.05em;
+    padding: 4px 10px;
+    background: var(--accent-bg);
+    border-radius: 5px;
 }
 .pms-banner-details {
-    display: flex;
-    justify-content: center;
-    gap: 8px;
+    display: inline-flex;
+    gap: 6px;
     flex-wrap: wrap;
-    margin-bottom: 10px;
 }
 .pms-banner-tag {
     display: inline-block;
-    padding: 5px 18px;
+    padding: 3px 10px;
     border-radius: 4px;
-    font-size: 0.8rem;
+    font-size: 0.72rem;
     font-weight: 600;
     color: white;
 }
@@ -1760,11 +1756,12 @@ label.multi-select-option > span { flex: 1; }
 .pms-banner-tag.ca { background: #b45309; }
 .pms-banner-tag.service { background: #7c3aed; }
 .pms-banner-id {
-    font-size: 0.85rem;
+    margin-left: auto;
+    font-size: 0.74rem;
     font-weight: 600;
     color: var(--text-muted);
     font-family: 'Courier New', monospace;
-    letter-spacing: 1px;
+    letter-spacing: 0.5px;
 }
 .pms-banner-action {
     margin-top: 20px;
@@ -1854,15 +1851,17 @@ label.multi-select-option > span { flex: 1; }
     .form-grid-4, .form-grid-2, .two-col { grid-template-columns: 1fr; }
     .step-card { padding-left: 0; }
     .step-badge { display: none; }
-    .report-tabs { grid-template-columns: repeat(2, 1fr); }
-    .report-tab { font-size: 0.78rem; padding: 10px 8px; }
-    .pms-banner-code { font-size: 2rem; }
+    .report-tabs { overflow-x: auto; flex-wrap: nowrap; }
+    .report-tab { font-size: 0.72rem; padding: 9px 6px; gap: 5px; }
+    .report-tab-num { width: 18px; height: 18px; font-size: 0.65rem; }
+    .pms-banner-code { font-size: 1rem; }
     .card { padding: 18px 16px; }
 }
 
 @media (max-width: 480px) {
     .top-nav { flex-wrap: wrap; height: auto; padding: 12px 16px; gap: 8px; }
     .nav-tabs { order: 3; width: 100%; justify-content: center; }
-    .report-tabs { grid-template-columns: 1fr; }
+    .report-tabs { overflow-x: auto; }
+    .report-tab { flex: 0 0 auto; }
 }
 

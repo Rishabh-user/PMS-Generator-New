@@ -156,17 +156,52 @@ def _uses_stainless(material: str) -> bool:
     ))
 
 
-def _pick_schedule(by_nps: dict, nps: float, calc_thk_mm: float) -> Optional[dict]:
-    rows = by_nps.get(nps) or []
-    if not rows or calc_thk_mm is None:
+def _pick_schedule(
+    primary_by_nps: dict,
+    nps: float,
+    calc_thk_mm: float,
+    fallback_by_nps: Optional[dict] = None,
+) -> Optional[dict]:
+    """Pick the lightest schedule whose WT ≥ calc_thk_mm.
+
+    Stainless service uses B36.19M (5S/10S/40S/80S) primarily. That table
+    tops out at 80S — high-pressure stainless classes (e.g. G10 SS316L
+    2500#) can need a heavier wall than 80S provides. In that case fall
+    back to B36.10M (SCH 160 / XXS) — same OD, just a heavier wall the
+    stainless table doesn't list. Without this fallback the picker would
+    silently land on 80S, a wall THINNER than required.
+    """
+    if calc_thk_mm is None:
         return None
-    pick = next((r for r in rows if r["wt_mm"] >= calc_thk_mm), None)
+
+    def _scan(by_nps):
+        rows = by_nps.get(nps) or [] if by_nps else []
+        if not rows:
+            return None
+        return next((r for r in rows if r["wt_mm"] >= calc_thk_mm), None)
+
+    pick = _scan(primary_by_nps)
+    used_fallback = False
+    if pick is None and fallback_by_nps:
+        pick = _scan(fallback_by_nps)
+        if pick is not None:
+            used_fallback = True
+
     status = "OK"
     if pick is None:
+        # No wall in either table covers the calc — flag NOT OK and return
+        # the heaviest available from the heavier table (fallback if any,
+        # else primary). For stainless this surfaces "NOT OK at XXS 7.82"
+        # instead of misleading "NOT OK at 80S 3.91".
+        heavy_table = fallback_by_nps if fallback_by_nps else primary_by_nps
+        rows = (heavy_table.get(nps) if heavy_table else None) or []
+        if not rows:
+            return None
         pick = rows[-1]
         status = "NOT OK"
+
     sch = pick.get("schedule") if pick.get("schedule") is not None else (pick.get("identification") or "—")
-    return {"sch": str(sch), "wt_mm": pick["wt_mm"], "status": status}
+    return {"sch": str(sch), "wt_mm": pick["wt_mm"], "status": status, "fallback": used_fallback}
 
 
 def _joint_eff(joint: str) -> float:
@@ -300,6 +335,15 @@ def _build_wall_thickness_table(ws, row: int, ctx: dict) -> int:
 
     fmt = lambda v: f"{v:.3f}" if isinstance(v, (int, float)) else "—"
     for rrow in ctx["wt_rows"]:
+        not_ok = (rrow.get("status") == "NOT OK")
+        # Project rule: NOT OK → SCH blanked (—), SEL.THK echoes calc thk (2 dp).
+        # Engineer must spec a custom wall ≥ calc thk for that NPS.
+        if not_ok:
+            sch_disp = "—"
+            sel_thk_disp = f"{rrow['calc_thk_mm']:.2f}" if rrow.get("calc_thk_mm") is not None else "—"
+        else:
+            sch_disp = rrow.get("sch") or "—"
+            sel_thk_disp = f"{rrow['sel_thk_mm']:.2f}" if rrow.get("sel_thk_mm") is not None else "—"
         cells = [
             rrow["nps"],
             f"{rrow['od_mm']:.1f}" if rrow.get("od_mm") is not None else "—",
@@ -309,8 +353,8 @@ def _build_wall_thickness_table(ws, row: int, ctx: dict) -> int:
             fmt(rrow.get("tm_mm")),
             "12.5%",
             fmt(rrow.get("calc_thk_mm")),
-            rrow.get("sch") or "—",
-            f"{rrow['sel_thk_mm']:.2f}" if rrow.get("sel_thk_mm") is not None else "—",
+            sch_disp,
+            sel_thk_disp,
             rrow.get("status") or "—",
         ]
         for i, v in enumerate(cells):
@@ -586,8 +630,12 @@ def build_workbook(
     # ---- Wall thickness rows ---------------------------------------------
     nps_list = _nps_rows()
     b3610 = _b3610_rows()
-    b3619 = _b3619_rows() if _uses_stainless(material) else {}
-    sched_table = b3619 if b3619 else b3610
+    use_ss = _uses_stainless(material)
+    b3619 = _b3619_rows() if use_ss else {}
+    # Primary table for the picker; fallback only applies to stainless
+    # (B36.19M tops out at 80S — fall back to B36.10M for heavier walls).
+    sched_table_primary  = b3619 if use_ss else b3610
+    sched_table_fallback = b3610 if use_ss else None
 
     P1_psi = _bargToPsig((pt.get("cold_point") or {}).get("pressure_barg") or 0)
     P2_psi = _bargToPsig(design_p_barg)
@@ -609,7 +657,7 @@ def build_workbook(
         valid = (t_mm < d_over_6) if t_mm is not None else None
         tm = t_mm + C_mm if t_mm is not None else None
         calc_thk = tm / (1 - mill_tol) if tm is not None else None
-        pick = _pick_schedule(sched_table, r["nps_decimal"], calc_thk) if calc_thk is not None else None
+        pick = _pick_schedule(sched_table_primary, r["nps_decimal"], calc_thk, sched_table_fallback) if calc_thk is not None else None
         wt_rows.append({
             "nps": r["nps"], "od_mm": D, "t_mm": t_mm, "d_over_6": d_over_6,
             "validity": "OK" if valid else ("ALERT" if valid is False else None),
@@ -627,8 +675,12 @@ def build_workbook(
                 c[x] = c.get(x, 0) + 1
         return max(c.items(), key=lambda kv: kv[1])[0] if c else "—"
 
-    small_sch = _mode([r["sch"] for r in wt_rows if r["nps"] and float(r["nps"]) <= 2.0])
-    large_sch = _mode([r["sch"] for r in wt_rows if r["nps"] and float(r["nps"]) >= 2.5])
+    # Mode ignores NOT OK rows — they don't represent a standard schedule;
+    # the engineer specs a custom wall ≥ calc thk on those NPS sizes.
+    small_sch = _mode([r["sch"] for r in wt_rows
+                       if r["nps"] and float(r["nps"]) <= 2.0 and r.get("status") == "OK"])
+    large_sch = _mode([r["sch"] for r in wt_rows
+                       if r["nps"] and float(r["nps"]) >= 2.5 and r.get("status") == "OK"])
 
     # ---- Hydrotest --------------------------------------------------------
     p_envelope = pt.get("pressures_barg") or []
