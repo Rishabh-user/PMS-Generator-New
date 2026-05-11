@@ -131,6 +131,8 @@ def _nps_rows(material: Optional[str] = None, service: Optional[str] = None) -> 
             fname = "nps_dimensions_cuni.json"
         elif re.search(r"\bCOPPER\b|C12200|\bB42\b", material, re.I):
             fname = "nps_dimensions_copper.json"
+        elif re.search(r"\bCPVC\b", material, re.I):
+            fname = "nps_dimensions_cpvc.json"
     return _load_json(fname)["rows"]
 
 

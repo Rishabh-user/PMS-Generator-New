@@ -124,9 +124,12 @@ _RULES: list[tuple[re.Pattern, dict]] = [
     }),
     (re.compile(r"(?i)\bCPVC\b"), {
         "family":       "CPVC",
-        "pipe":         "ASTM F 441",
-        "fittings":     "ASTM F 437 / F 438 / F 439",
-        "flange":       "Per mfr. (typ. SCH 80 stub end + PVC backing)",
+        # Project §5.5 long-form CPVC spec — used across pipe / fittings /
+        # flange / blind flange (the project sheet shows the same MOC text
+        # in every section because all parts are the same compound).
+        "pipe":         "CPVC, Type IV Grade 1, Cell classification 23447-B, ASTM D 1784",
+        "fittings":     "CPVC, Type IV Grade 1, Cell classification 23447-B, ASTM D 1784",
+        "flange":       "CPVC, Type IV Grade 1, Cell classification 23447-B, ASTM D 1784",
         "valve_body":   "NAB body — ASTM B 148 UNS C95800",
         "branch_outlet":"Saddle fitting per mfr.",
     }),

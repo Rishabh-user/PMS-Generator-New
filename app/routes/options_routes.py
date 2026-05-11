@@ -25,6 +25,7 @@ _NPS_OVERRIDES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?i)\bCuNi\b|C70600|B466"),       "nps_dimensions_cuni.json"),
     # Copper must come AFTER CuNi (CuNi contains 'Cu' but isn't generic copper).
     (re.compile(r"(?i)\bCOPPER\b|C12200|\bB42\b"),  "nps_dimensions_copper.json"),
+    (re.compile(r"(?i)\bCPVC\b"),                   "nps_dimensions_cpvc.json"),
 ]
 
 

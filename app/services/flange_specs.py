@@ -93,6 +93,14 @@ def _is_bonstrand_service(service: Optional[str]) -> bool:
     return bool(re.search(r"Hypochlorite|BONSTRAND", service, re.I))
 
 
+def _is_cpvc(material: str) -> bool:
+    """Project digit 60 — CPVC (Chlorinated Polyvinyl Chloride). Used for
+    Sewage / Hypochlorite service. HDG bolting + PTFE/EPDM full-face gasket."""
+    if not material:
+        return False
+    return bool(re.search(r"\bCPVC\b", material, re.I))
+
+
 def _is_copper(material: str) -> bool:
     """Project digit 40 — pure Copper (UNS C12200). Distinct from CuNi
     (90/10 Cu-Ni alloy, digit 30) — Copper is the bare metal."""
@@ -141,9 +149,9 @@ def _is_soft_gasket_material(material: str) -> bool:
 #   150 - 600#            → RF (Raised Face)
 #   900# / 1500# / 2500#  → RTJ (Ring-Type Joint) for sealing reliability.
 def face_type(rating: str, material: str) -> dict:
-    # CuNi (EEMUA 234), pure Copper (ASME B 16.24), and GRE (composite
-    # flange seating) all use Flat Face.
-    if _is_cuni(material) or _is_copper(material) or _is_gre(material):
+    # CuNi (EEMUA 234), pure Copper (ASME B 16.24), GRE (composite flange
+    # seating), and CPVC (plastic flat-face) all use Flat Face.
+    if _is_cuni(material) or _is_copper(material) or _is_gre(material) or _is_cpvc(material):
         return {"code": "FF", "label": "Flat Face"}
     rn = _rating_num(rating)
     if rn is None or rn <= 600:
@@ -169,6 +177,14 @@ def bolting(material: str) -> dict:
     cuni = _is_cuni(material)
     copper = _is_copper(material)
     gre = _is_gre(material)
+    cpvc = _is_cpvc(material)
+    # CPVC (digit 60) — HDG bolting per project §5.5; no Xylan, special
+    # text on the nut (extra steel + CPVC washers on both sides).
+    if cpvc:
+        return {
+            "stud":    "ASTM A 193 GR B7, HDG AS PER ASTM A 153, ASME B 1.1",
+            "hex_nut": "ASTM A 194 GR 2H, HDG AS PER ASTM A 153, ASME B 18.2.2 WITH 3.2 mm thk Steel & CPVC washer on both sides",
+        }
     # DSS / SDSS (digits 20 + 25) — project rule: ASTM A 453 Gr. 660 for both
     # stud and nut across ALL ratings (with or without NACE). A453 660 is
     # precipitation-hardened austenitic and corrosion-resistant on its own,
@@ -289,6 +305,13 @@ def gasket(face: str, material: str, service: Optional[str] = None) -> dict:
         return {
             "type": "Full Face Gasket",
             "spec": "ASME B 16.21, Full face gasket, 2 mm, CNAF",
+        }
+    # CPVC (digit 60) — PTFE/EPDM full-face gasket per ASME B 16.21
+    # (chemical-resistant, suitable for sewage / hypochlorite service).
+    if _is_cpvc(material):
+        return {
+            "type": "Full Face Gasket",
+            "spec": "#150 Full face gasket 3 mm thk to ASME B 16.21, PTFE/EPDM",
         }
     # Galvanized / epoxy-lined CS classes (A3, A4, B4, D4, A5, A6 etc.) and
     # 90/10 CuNi — low-pressure water/utility — use 3 mm neoprene/EPDM flat
@@ -486,7 +509,8 @@ def _valve_codes(rating: str, material: str, class_code: Optional[str]) -> dict:
     #   600#:                                 Triple-Offset-PEEK only
     #   900#+:                                None — pressure-class uses ball/gate.
     if not nace:
-        wafer_only = _is_cuni(material) or _is_copper(material) or _is_gre(material)
+        wafer_only = (_is_cuni(material) or _is_copper(material)
+                      or _is_gre(material) or _is_cpvc(material))
         if wafer_only and rn and rn <= 300:
             codes["butterfly"] = f"BFWT{tail}"
         elif rn and rn <= 300:

@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "source": "Project §5.5 — CPVC pipe (ASTM F 441, Type IV Grade 1, Cell 23447-B)",
+    "applies_to": "CPVC classes (digit 60): A60",
+    "note": "ODs match B36.10M iron-pipe-size series; CPVC pipe is always SCH 80 in the project (Sewage / Hypochlorite). NPS axis truncated to 0.5\"–8\"."
+  },
+  "rows": [
+    { "nps": "0.5",  "nps_decimal": 0.5,  "od_mm": 21.3  },
+    { "nps": "0.75", "nps_decimal": 0.75, "od_mm": 26.7  },
+    { "nps": "1",    "nps_decimal": 1.0,  "od_mm": 33.4  },
+    { "nps": "1.5",  "nps_decimal": 1.5,  "od_mm": 48.3  },
+    { "nps": "2",    "nps_decimal": 2.0,  "od_mm": 60.3  },
+    { "nps": "2.5",  "nps_decimal": 2.5,  "od_mm": 73.0  },
+    { "nps": "3",    "nps_decimal": 3.0,  "od_mm": 88.9  },
+    { "nps": "4",    "nps_decimal": 4.0,  "od_mm": 114.3 },
+    { "nps": "6",    "nps_decimal": 6.0,  "od_mm": 168.3 },
+    { "nps": "8",    "nps_decimal": 8.0,  "od_mm": 219.1 }
+  ]
+}

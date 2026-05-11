@@ -425,6 +425,7 @@ function _npsKey(material, service) {
     }
     if (/CuNi|C70600|B466/i.test(material)) return 'cuni';
     if (/\bCOPPER\b|C12200|\bB42\b/i.test(material)) return 'copper';
+    if (/\bCPVC\b/i.test(material)) return 'cpvc';
     return 'default';
 }
 
@@ -1135,6 +1136,9 @@ function _isCopperMat(material) {
 function _isGreMat(material) {
     return /\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced/i.test(material || '');
 }
+function _isCpvcMat(material) {
+    return /\bCPVC\b/i.test(material || '');
+}
 function _isBonstrandService(service) {
     return /Hypochlorite|BONSTRAND/i.test(service || '');
 }
@@ -1183,6 +1187,9 @@ function _dsPipeEnds(material, service) {
             : { sml: 'Taper / Taper Socket x Spigot, Adhesive bonded',
                 lrg: 'Taper / Taper Socket x Spigot, Adhesive bonded', merge: true };
     }
+    if (_isCpvcMat(material)) {
+        return { sml: 'Socket on one end', lrg: 'Socket on one end', merge: true };
+    }
     if (_isCuNiMat(material)) {
         return { sml: 'PE', lrg: 'Bevel Ends', merge: false };
     }
@@ -1210,6 +1217,7 @@ function _dsPipeCodeLabel(material, service) {
             ? "Manufacturer's Std (BONSTRAND Series 50000C)"
             : "Manufacturer's Std.";
     }
+    if (_isCpvcMat(material)) return 'ASTM F 441';
     return 'ASME B 36.10M';
 }
 
@@ -1393,6 +1401,10 @@ function _dsFlangeType(material, service) {
             : 'Taper / Taper Socket x Spigot, Adhesive bonded';
         return { sm: txt, lg: txt, merge: true };
     }
+    if (_isCpvcMat(material)) {
+        return { sm: '#150 Socket Type/ Manufacturer Standard',
+                 lg: '#150 Socket Type/ Manufacturer Standard', merge: true };
+    }
     if (_isCuNiMat(material)) {
         return { sm: 'SW Flange', lg: 'WN Flange', merge: false };
     }
@@ -1410,6 +1422,18 @@ function _dsFlangeType(material, service) {
 // trailing Blind Flange table.
 function _dsFlangeBlock(material, fs, faceFull, service) {
     const flangeMoc = fs.flange || '—';
+    if (_isCpvcMat(material)) {
+        return {
+            section_title: 'Flange (F 439, Bolt hole as per ASME B 16.5)',
+            moc:           flangeMoc,
+            std:           null,            // No separate STD row for CPVC (merged into title)
+            show_face:     true,
+            face:          'FF STOCK FINISH (1000 micro inch AARH)',
+            blind_type:    '#150 / Manufacturer Standard',
+            blind_moc:     flangeMoc,
+            blind_face:    'FF STOCK FINISH (1000 micro inch AARH)',
+        };
+    }
     if (_isGreMat(material)) {
         const isBon = _isBonstrandService(service);
         return {
@@ -1450,7 +1474,7 @@ function _dsFlangeBlock(material, fs, faceFull, service) {
 // Section title for the bolts/nuts/gaskets block — Copper labels it
 // "Mechanical Joints" per the project Excel template.
 function _dsBoltsSectionTitle(material) {
-    if (_isCopperMat(material)) return 'Mechanical Joints';
+    if (_isCopperMat(material) || _isCpvcMat(material)) return 'Mechanical Joints';
     return 'Bolts/ Nuts/ Gaskets';
 }
 
@@ -1683,7 +1707,12 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 </tr>
             </table>
 
-            <!-- ── Pipe Data ── -->
+            <!-- ── Pipe Data ──
+                 Unified layout — OD / SCH / SEL.THK come from the same
+                 picker that drives Tab 3 (Wall Thickness Calculation),
+                 so the two views always agree. Material-specific TYPE /
+                 MOC / Ends / Code overrides still apply. GRE adds an
+                 I.D. row from its dim file; CPVC adds a Fittings ref. -->
             <table class="ds-table ds-pipe-tbl">
                 <tr class="ds-section-row">
                     <td colspan="${dsAxis.length + 1}">Pipe Data</td>
@@ -1695,14 +1724,10 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 <tr>
                     <td class="ds-label">Size (in)</td>${npsCellsRow}
                 </tr>
-                <tr>
-                    <td class="ds-label">O.D. mm</td>${odCellsRow}
-                </tr>
-                ${isGre
-                    ? `<tr><td class="ds-label">I.D. mm</td>${idCellsRow}</tr>
-                       <tr><td class="ds-label">WT (mm)</td>${wtCellsRowGre}</tr>`
-                    : `<tr><td class="ds-label">Sch.</td>${schCellsRow}</tr>
-                       <tr><td class="ds-label">WT. mm</td>${wtCellsRow}</tr>`}
+                <tr><td class="ds-label">O.D. mm</td>${odCellsRow}</tr>
+                ${isGre ? `<tr><td class="ds-label">I.D. mm</td>${idCellsRow}</tr>` : ''}
+                <tr><td class="ds-label">Sch.</td>${schCellsRow}</tr>
+                <tr><td class="ds-label">WT. mm</td>${wtCellsRow}</tr>
                 <tr>
                     <td class="ds-label">TYPE</td>${pipeType.merge
                         ? `<td colspan="${dsAxis.length}">${escapeHtml(pipeType.sml)}</td>`
@@ -1714,9 +1739,30 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 <tr>
                     <td class="ds-label">Ends</td>${endsRow}
                 </tr>
+                ${_isCpvcMat(state.material)
+                    ? `<tr><td class="ds-label">Fittings</td><td colspan="${dsAxis.length}" class="ds-value">ASTM F 439</td></tr>`
+                    : ''}
             </table>
 
             <!-- ── Fittings Data ── -->
+            ${_isCpvcMat(state.material) ? `
+            <!-- CPVC: dedicated layout. Socket-type sub-section listing
+                 standard components, then a Threaded sub-section (Union)
+                 with its own TYPE/MOC pair. Single column — small/large
+                 bore distinction doesn't apply to CPVC. -->
+            <table class="ds-table">
+                <tr class="ds-section-row"><td colspan="2">Fittings Data</td></tr>
+                <tr><td class="ds-label">TYPE</td><td class="ds-value">Socket Type</td></tr>
+                <tr><td class="ds-label">MOC</td><td class="ds-value"><strong>${escapeHtml(fs.fittings || '—')}</strong></td></tr>
+                <tr><td class="ds-label">Elbow</td><td class="ds-value">${escapeHtml(fs.fittings || '—')}</td></tr>
+                <tr><td class="ds-label">Tee</td><td class="ds-value">${escapeHtml(fs.fittings || '—')}</td></tr>
+                <tr><td class="ds-label">Red.</td><td class="ds-value">${escapeHtml(fs.fittings || '—')}</td></tr>
+                <tr><td class="ds-label">Cap</td><td class="ds-value">${escapeHtml(fs.fittings || '—')}</td></tr>
+                <tr><td class="ds-label">Coupl.</td><td class="ds-value">${escapeHtml(fs.fittings || '—')}</td></tr>
+                <tr><td class="ds-label">Union</td><td class="ds-value">ASTM F 437</td></tr>
+                <tr><td class="ds-label">TYPE</td><td class="ds-value">Manufacturer Standard, Threaded (ASME B 1.20.1)</td></tr>
+                <tr><td class="ds-label">MOC</td><td class="ds-value">${escapeHtml(fs.fittings || '—')}; O-ring material : EPDM</td></tr>
+            </table>` : `
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="3">Fittings Data</td></tr>
                 <tr>
@@ -1767,11 +1813,11 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                                 <td class="ds-value">${row.lg ? escapeHtml(row.lg) : '—'}</td>
                             </tr>`;
                         }).join('')}`}
-            </table>
+            </table>`}
 
             <!-- ── Flange ── -->
             <table class="ds-table">
-                <tr class="ds-section-row"><td colspan="3">Flange</td></tr>
+                <tr class="ds-section-row"><td colspan="3">${escapeHtml(flangeBlock.section_title || 'Flange')}</td></tr>
                 <tr>
                     <td class="ds-label">TYPE</td>
                     ${flangeTypeSplit.merge
@@ -1783,14 +1829,22 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 ${flangeBlock.show_face
                     ? `<tr><td class="ds-label">FACE</td><td colspan="2" class="ds-value">${escapeHtml(flangeBlock.face)}</td></tr>`
                     : ''}
-                <tr><td class="ds-label">STD</td><td colspan="2" class="ds-value">${escapeHtml(flangeBlock.std)}</td></tr>
+                ${flangeBlock.std
+                    ? `<tr><td class="ds-label">STD</td><td colspan="2" class="ds-value">${escapeHtml(flangeBlock.std)}</td></tr>`
+                    : ''}
             </table>
 
             ${flangeBlock.blind_moc ? `
             <!-- ── Blind Flange ── -->
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="2">Blind Flange</td></tr>
+                ${flangeBlock.blind_type
+                    ? `<tr><td class="ds-label">TYPE</td><td class="ds-value">${escapeHtml(flangeBlock.blind_type)}</td></tr>`
+                    : ''}
                 <tr><td class="ds-label">MOC</td><td class="ds-value">${escapeHtml(flangeBlock.blind_moc)}</td></tr>
+                ${flangeBlock.blind_face
+                    ? `<tr><td class="ds-label">FACE</td><td class="ds-value">${escapeHtml(flangeBlock.blind_face)}</td></tr>`
+                    : ''}
             </table>` : ''}
 
             ${isGre ? `
@@ -1798,7 +1852,7 @@ function renderDatasheetTab(state, designPbarg, designTc) {
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="2">Spade and Spacer</td></tr>
                 <tr><td class="ds-label">TYPE</td><td class="ds-value">Manufacturer standard, Flat Face (FF)</td></tr>
-            </table>` : (!_isCopperMat(state.material) ? `
+            </table>` : ((!_isCopperMat(state.material) && !_isCpvcMat(state.material)) ? `
             <!-- ── Spectacle Blind / Spacer Blinds (skipped for Copper) ── -->
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="3">Spectacle Blind/Spacer Blinds</td></tr>
@@ -2414,7 +2468,10 @@ function populateAdequacy(state, designPbarg, designTc) {
         return;
     }
     const ratedAtDesignT = ratedPressureAtT(state.pt.temperatures_c, state.pt.pressures_barg, designTc);
-    const adequate = ratedAtDesignT >= designPbarg;
+    // Tolerance: 0.05 barg (= 0.7 psig) — within ASME B16.5 P-T table
+    // rounding noise. Prevents false INADEQUATE when both values display
+    // as the same rounded number (e.g. rating 14.46 vs typed 14.5).
+    const adequate = ratedAtDesignT + 0.05 >= designPbarg;
     box.className = `adequacy-box ${adequate ? 'pass' : 'fail'}`;
     box.innerHTML = adequate
         ? `&#10003; Class ${escapeHtml(state.rating)} is <strong>ADEQUATE</strong>: ${fmt(ratedAtDesignT, 1)} barg &ge; Design ${fmt(designPbarg, 1)} barg at ${fmt(designTc, 0)}&deg;C`
@@ -2502,10 +2559,12 @@ function showReport(state) {
 
     // Pre-fill the editable design conditions ONLY if the user hasn't
     // typed anything yet — preserve their edits across re-resolves.
+    // Use 2 dp for pressure so the auto-fill doesn't round 14.46 → 14.5,
+    // which would then exceed the rating and falsely flag INADEQUATE.
     const pIn = document.getElementById('rDesignPressure');
     const pPsig = document.getElementById('rDesignPressurePsig');
     const tIn = document.getElementById('rDesignTemperature');
-    if (pIn && !pIn.value) pIn.value = fmt(state.designP, 1);
+    if (pIn && !pIn.value) pIn.value = fmt(state.designP, 2);
     if (pPsig && !pPsig.value) pPsig.value = fmt(bargToPsig(state.designP), 1);
     if (tIn && !tIn.value) tIn.value = fmt(state.designT, 0);
 
