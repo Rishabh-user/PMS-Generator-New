@@ -400,7 +400,24 @@ def _build_flange_bolts_gasket(ws, row: int, ctx: dict) -> int:
     row = _write_kv(ws, row, "Gasket",      g.get("spec"), span=6)
     row += 1
 
-    row = _section_header(ws, row, "8. SPECTACLE BLIND / SPACER")
+    # Valves — project codes per §5.5 nomenclature
+    # [TYPE 2ch][SUBTYPE 1ch][SEAT 1ch][class base][FACE 1ch]
+    row = _section_header(ws, row, "8. VALVES")
+    v = fx.get("valves") or {}
+    _vcode = lambda key: (v.get(key) or {}).get("code") if isinstance(v.get(key), dict) else None
+    row = _write_kv(ws, row, "Rating",     v.get("rating"),    bold=True)
+    row = _write_kv(ws, row, "Body MOC",   v.get("body"),      bold=True)
+    row = _write_kv(ws, row, "Ball",       _vcode("ball"),       span=6)
+    row = _write_kv(ws, row, "Gate",       _vcode("gate"),       span=6)
+    row = _write_kv(ws, row, "Globe",      _vcode("globe"),      span=6)
+    row = _write_kv(ws, row, "Check",      _vcode("check"),      span=6)
+    if v.get("butterfly"):
+        row = _write_kv(ws, row, "Butterfly", _vcode("butterfly"), span=6)
+    row = _write_kv(ws, row, "DBB",        _vcode("dbb"),        span=6)
+    row = _write_kv(ws, row, "DBB (Inst.)", _vcode("dbb_inst"),  span=6)
+    row += 1
+
+    row = _section_header(ws, row, "9. SPECTACLE BLIND / SPACER")
     sp = fx.get("spectacle") or {}
     row = _write_kv(ws, row, "MOC",                sp.get("moc"), bold=True)
     row = _write_kv(ws, row, "Standard (Small)",   sp.get("small_bore"))
@@ -410,12 +427,12 @@ def _build_flange_bolts_gasket(ws, row: int, ctx: dict) -> int:
 
 
 def _build_footer(ws, row: int, ctx: dict) -> int:
-    row = _section_header(ws, row, "9. NOTES")
+    row = _section_header(ws, row, "10. NOTES")
     notes = [
         "Calculated wall thickness per ASME B31.3 Eq. 3a; mill tolerance 12.5%.",
         "Schedule selection per ASME B36.10M §9 (or B36.19M for stainless) — lightest WT ≥ Calc Thk.",
         "Hydrotest per ASME B31.3 §345.4.2(a) — 1.5 × maximum rated pressure.",
-        "Valve codes pending project valve catalog.",
+        "Valve descriptions follow ASME conventions (body MOC + seat + bore + face); engineer maps to project valve catalog when ordering.",
         "Reviewer to verify NACE / LTCS / PWHT requirements per material and service.",
     ]
     for n in notes:

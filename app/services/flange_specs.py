@@ -169,15 +169,138 @@ def material_ring_match(material: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Valves — type-based descriptions
+# ──────────────────────────────────────────────────────────────────────
+# We surface STANDARD descriptions (body material + seat + bore + face)
+# rather than project-internal codes (`BLRPF10J` etc.) which require a
+# project valve catalog to map. Engineers map description → project code
+# manually; the description itself is the spec on most major-IOC PMS docs.
+def _seat_choice(rating_num: int, nace: bool, austenitic: bool) -> str:
+    """Soft-seated valves (PTFE) for low/medium pressure + non-NACE;
+    metal-seated above 600# or for sour service / abrasive duty."""
+    if nace:
+        return "Metal-seated (NACE compliant)"
+    if rating_num and rating_num >= 900:
+        return "Metal-seated"
+    return "PTFE-seated"
+
+
+def _body_material_cast(material: str) -> str:
+    """Map material family → conventional cast valve body grade."""
+    u = (material or "").upper()
+    if "SS316L" in u or "TP316L" in u:    return "ASTM A 351 CF3M"
+    if "SS316"  in u or "TP316"  in u:    return "ASTM A 351 CF8M"
+    if "SDSS"   in u or "S32750" in u:    return "ASTM A 995 Gr. 6A"
+    if "DSS"    in u or "S31803" in u:    return "ASTM A 995 Gr. 4A"
+    if u.startswith("LTCS"):              return "ASTM A 352 Gr. LCB"
+    if "CUNI"   in u or "C70600" in u:    return "ASTM B 369 UNS C96200 (NAB)"
+    if "COPPER" in u or "C12200" in u:    return "ASTM B 62 UNS C83600"
+    if "TITANIUM" in u or "B861" in u:    return "ASTM B 367 Gr. C-2"
+    if "CPVC"   in u:                     return "NAB Body — ASTM B 148 UNS C95800"
+    if "GRE"    in u:                     return "NAB Body — ASTM B 148 UNS C95800"
+    return "ASTM A 216 Gr. WCB"
+
+
+def _class_base(class_code: Optional[str]) -> str:
+    """Strip the §5.5 trailing suffix (N / L / LN) from a class code so the
+    valve nomenclature uses the bare letter+digit, e.g. 'A1N' → 'A1',
+    'F10N' → 'F10', 'G1LN' → 'G1'."""
+    if not class_code:
+        return "A1"
+    return re.sub(r"L?N?$", "", class_code, flags=re.I)
+
+
+def _valve_codes(rating: str, material: str, class_code: Optional[str]) -> dict:
+    """Build project-style valve codes per the §5.5 nomenclature:
+        [TYPE 2ch] [SUBTYPE 1ch] [SEAT 1ch] [§5.5 class base] [FACE 1ch]
+    Decoded from the project's valve catalog screenshots."""
+    rn   = _rating_num(rating) or 0
+    nace = _is_nace(material)
+    face_code = face_type(rating, material)["code"]
+    face_suffix = "R" if face_code == "RF" else "J"
+
+    base = _class_base(class_code)
+    tail = f"{base}{face_suffix}"
+
+    # Ball valve seat: Trunnion (T) for ≤600# non-NACE, Pressure-sealed
+    # Metal (P) for ≥900# or any NACE class.
+    ball_seat = "P" if (nace or rn >= 900) else "T"
+
+    # Universal valves — applicable to every §5.5 class (Ball / Gate / Globe / Check)
+    codes = {
+        "ball":   f"BLR{ball_seat}{tail}, BLF{ball_seat}{tail}",
+        "gate":   f"GAYM{tail}",
+        "globe":  f"GLYM{tail}",
+        "check":  f"CHPM{tail}, CHSM{tail}, CHDM{tail}",
+    }
+
+    # Butterfly — low-pressure water / utility / large-bore on-off duty.
+    # Practice: 150# and 300# only, non-NACE. 600#+ uses ball/gate for
+    # sealing reliability; sour service excludes butterfly entirely.
+    if rn and rn <= 300 and not nace:
+        codes["butterfly"] = f"BFWT{tail}, BFTP{tail}"
+
+    # DBB (Double Block & Bleed) — positive double-isolation, mandated for
+    # high-pressure sealing-critical service. Project §5.5 catalog lists
+    # DBB on E (900#), F (1500#), G (2500#) classes only.
+    if rn and rn >= 900:
+        codes["dbb"]      = f"DBR{ball_seat}{tail}"
+        codes["dbb_inst"] = f"DBR{ball_seat}{tail}T"   # "T" = threaded instrument connection
+    return codes
+
+
+def valves(rating: str, material: str, class_code: Optional[str] = None) -> dict:
+    """Return valve specs by type. Each entry carries BOTH the project
+    code (for procurement / Excel export) AND a descriptive sentence
+    (for engineering review on screen)."""
+    rn   = _rating_num(rating) or 0
+    nace = _is_nace(material)
+    face = face_type(rating, material)["code"]
+    body = _body_material_cast(material)
+    is_aust = "SS316" in (material or "").upper() or "TP316" in (material or "").upper()
+    seat = _seat_choice(rn, nace, is_aust)
+    nace_suffix = " (NACE MR0175 trim, hardness controlled)" if nace else ""
+
+    codes = _valve_codes(rating, material, class_code)
+
+    def _row(code_key: str, desc: str) -> dict:
+        return {"code": codes.get(code_key, "—"), "desc": desc}
+
+    result = {
+        "rating":   f"{rating}, {face}",
+        "body":     body,
+        "ball":     _row("ball",
+            f"Reduced bore (0.5\"–2\"); Reduced and Full bore (2.5\"–24\"), {seat}, {body} body, Flanged {face}{nace_suffix}"),
+        "gate":     _row("gate",
+            f"Y-body, Metal-seated, Screw-and-Yoke, all sizes, {body} body, Flanged {face}{nace_suffix}"),
+        "globe":    _row("globe",
+            f"Y-body, Metal-seated, Screw-and-Yoke, sizes 0.5\"–8\", {body} body, Flanged {face}{nace_suffix}"),
+        "check":    _row("check",
+            f"Piston check (0.5\"–3\"); Swing and Dual-plate check (4\"–24\"), {body} body, Flanged {face}{nace_suffix}"),
+    }
+    if "butterfly" in codes:
+        result["butterfly"] = _row("butterfly",
+            f"Wafer and Triple-Offset PTFE-seated (3\" and larger), {body} body, Flanged {face}{nace_suffix}")
+    if "dbb" in codes:
+        result["dbb"] = _row("dbb",
+            f"Double Block and Bleed, {body} body, Flanged {face}{nace_suffix}")
+        result["dbb_inst"] = _row("dbb_inst",
+            f"DBB with threaded instrument connections, {body} body, Flanged {face}{nace_suffix}")
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Public entrypoint
 # ──────────────────────────────────────────────────────────────────────
-def build(rating: str, material: str, flange_moc: Optional[str]) -> dict:
-    """One-shot bundle of all four sections for code_factors.flange_extras."""
+def build(rating: str, material: str, flange_moc: Optional[str],
+          class_code: Optional[str] = None) -> dict:
+    """One-shot bundle of all five sections for code_factors.flange_extras."""
     face = face_type(rating, material)
     return {
-        "face":     face,
-        "type":     flange_type(rating, material),
-        "bolting":  bolting(material),
-        "gasket":   gasket(face["code"], material),
+        "face":      face,
+        "type":      flange_type(rating, material),
+        "bolting":   bolting(material),
+        "gasket":    gasket(face["code"], material),
         "spectacle": spectacle(flange_moc),
+        "valves":    valves(rating, material, class_code),
     }

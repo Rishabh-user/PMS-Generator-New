@@ -929,22 +929,33 @@ function renderSpectacleCard(state) {
 function renderValvesCard(state) {
     const card = document.getElementById('rValvesCard');
     if (!card) return;
-    const cf  = state.codeFactors || {};
-    const fx  = cf.flange_extras || {};
-    const fc  = fx.face || {};
-    const ratingFace = `${state.rating || '—'}, ${fc.code || ''}`.trim().replace(/, *$/, '');
-    // Project-internal valve codes (BLRPF10J, GAYMF10J, …) aren't standard
-    // — they require the project valve catalog. Surface the rating + face
-    // so the engineer can manually pick codes from their catalog and add
-    // them later. The Ball / Gate / Globe / Check / DBB rows are blank
-    // placeholders that the engineer fills in.
+    const fx = (state.codeFactors || {}).flange_extras || {};
+    const v  = fx.valves || {};
+
+    // Project valve codes per §5.5 nomenclature
+    // [TYPE 2ch][SUBTYPE 1ch][SEAT 1ch][class base][FACE 1ch]
+    // Code shown prominently; description as secondary line for engineering review.
+    const codeRow = (label, item) => {
+        if (!item) return '';
+        const code = (item && item.code) || '—';
+        const desc = (item && item.desc) || '';
+        return `<div class="kv-row top"><span class="kv-label">${escapeHtml(label)}</span>` +
+               `<span class="kv-value valve-cell">` +
+               `<span class="valve-code">${escapeHtml(code)}</span>` +
+               (desc ? `<span class="valve-desc">${escapeHtml(desc)}</span>` : '') +
+               `</span></div>`;
+    };
+
     card.innerHTML = [
-        _kvRow('Rating', escapeHtml(ratingFace), { bold: true }),
-        _kvRow('Ball',   '<em>— pending project valve catalog —</em>', { muted: true }),
-        _kvRow('Gate',   '<em>— pending project valve catalog —</em>', { muted: true }),
-        _kvRow('Globe',  '<em>— pending project valve catalog —</em>', { muted: true }),
-        _kvRow('Check',  '<em>— pending project valve catalog —</em>', { muted: true }),
-        _kvRow('DBB',    '<em>— pending project valve catalog —</em>', { muted: true }),
+        _kvRow('Rating',       escapeHtml(v.rating || '—'), { bold: true }),
+        _kvRow('Body MOC',     escapeHtml(v.body || '—'),   { bold: true }),
+        codeRow('Ball',        v.ball),
+        codeRow('Gate',        v.gate),
+        codeRow('Globe',       v.globe),
+        codeRow('Check',       v.check),
+        codeRow('Butterfly',   v.butterfly),
+        codeRow('DBB',         v.dbb),
+        codeRow('DBB (Inst.)', v.dbb_inst),
     ].join('');
 }
 

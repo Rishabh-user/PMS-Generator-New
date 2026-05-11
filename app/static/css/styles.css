@@ -446,6 +446,11 @@ label.multi-select-option > span { flex: 1; }
 .kv-tag.no { background: #f1f5f9; color: var(--text-muted); }
 .kv-row.warning .kv-value { color: var(--orange); }
 
+/* Valve code rows — code primary (mono, navy), description secondary (small, muted). */
+.kv-value.valve-cell { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 70%; }
+.valve-code { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-weight: 700; font-size: 0.88rem; color: var(--navy, #1e3a8a); letter-spacing: 0.02em; }
+.valve-desc { font-weight: 400; font-size: 0.72rem; color: var(--text-muted); line-height: 1.35; text-align: right; }
+
 /* ================================================================
    DERIVED BANNER
    ================================================================ */
