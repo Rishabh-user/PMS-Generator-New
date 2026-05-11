@@ -193,11 +193,258 @@ body {
 .api-badge.online { color: #059669; }
 
 /* ================================================================
-   MAIN CONTENT
+   MAIN CONTENT (legacy classes preserved for back-compat)
    ================================================================ */
 .main { max-width: 1200px; margin: 0 auto; padding: 32px 32px 80px; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
+
+/* ================================================================
+   DASHBOARD LAYOUT — sidebar + main pane
+   ================================================================ */
+.dashboard {
+    display: flex;
+    align-items: stretch;
+    min-height: calc(100vh - 68px);   /* top-nav is 68px */
+    width: 100%;
+}
+.sidebar {
+    width: 340px;
+    flex-shrink: 0;
+    background: #fff;
+    border-right: 1px solid var(--border);
+    padding: 24px 20px;
+    position: sticky;
+    top: 68px;
+    align-self: flex-start;
+    height: calc(100vh - 68px);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+.sidebar.collapsed { display: none; }
+
+.sidebar-section {
+    background: #fff;
+}
+.sidebar-section-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent);
+}
+.ssec-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.sidebar-form .form-group { margin-bottom: 12px; }
+.sidebar-form label {
+    display: block;
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 5px;
+}
+.sidebar-form input,
+.sidebar-form select {
+    width: 100%;
+    padding: 7px 10px;
+    font-size: 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text);
+    font-family: inherit;
+}
+.sidebar-form input:focus,
+.sidebar-form select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(14,58,92,0.08);
+}
+.sidebar-form .hint {
+    display: block;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    margin-top: 3px;
+}
+.sidebar-form .form-row-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+.sidebar-advanced {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+}
+.sidebar-advanced summary {
+    cursor: pointer;
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    padding: 4px 0;
+}
+.sidebar-advanced summary:hover { color: var(--accent); }
+.sidebar-advanced[open] { padding-bottom: 8px; }
+
+/* Live class-code preview (between form and design conditions) */
+.sidebar-resolution {
+    background: linear-gradient(135deg, #0e3a5c 0%, #1a5276 100%);
+    color: #fff;
+    border-radius: 10px;
+    padding: 14px 16px;
+}
+.sidebar-resolution .ds-class-code {
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 1.6rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    line-height: 1.2;
+}
+.sidebar-resolution .ds-class-meta {
+    font-size: 0.7rem;
+    opacity: 0.85;
+    margin-top: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.sidebar-resolution .ds-class-pills {
+    display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px;
+}
+.sidebar-resolution .ds-class-pill {
+    background: rgba(255,255,255,0.18);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+
+.sidebar-footer {
+    margin-top: auto;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+.btn-block {
+    width: 100%;
+    justify-content: center;
+    padding: 10px 16px;
+    font-size: 0.85rem;
+}
+
+/* Main pane */
+.dashboard-main {
+    flex: 1;
+    min-width: 0;
+    padding: 28px 32px;
+    background: var(--bg);
+    overflow-x: hidden;
+}
+
+/* Empty state — shown until class is resolved */
+.empty-state {
+    max-width: 540px;
+    margin: 80px auto;
+    text-align: center;
+    color: var(--text-secondary);
+}
+.empty-state-icon {
+    display: inline-flex;
+    width: 88px; height: 88px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--accent-bg);
+    color: var(--accent);
+    margin-bottom: 18px;
+}
+.empty-state h2 {
+    font-size: 1.3rem;
+    color: var(--text);
+    margin-bottom: 8px;
+    font-weight: 700;
+}
+.empty-state p {
+    font-size: 0.9rem;
+    line-height: 1.6;
+    color: var(--text-muted);
+}
+
+/* Sidebar toggle button (in top nav) */
+.sidebar-toggle {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 36px; height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.sidebar-toggle:hover {
+    background: var(--bg-hover);
+    color: var(--accent);
+}
+
+/* Status pills in top nav center */
+.nav-center {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+}
+.nav-status-pill {
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-size: 0.74rem;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    letter-spacing: 0.03em;
+}
+
+/* Make report tabs sticky to the dashboard-main top */
+.dashboard-main .report-tabs {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--bg);
+    padding-top: 4px;
+}
+
+/* Responsive: collapse sidebar below 1024px */
+@media (max-width: 1024px) {
+    .sidebar {
+        position: fixed;
+        left: 0;
+        top: 68px;
+        z-index: 90;
+        box-shadow: 4px 0 16px rgba(0,0,0,0.08);
+    }
+    .sidebar:not(.open) { display: none; }
+    .dashboard-main { padding: 20px 16px; }
+}
+@media (max-width: 768px) {
+    .dashboard-main { padding: 16px 12px; }
+}
 
 /* ================================================================
    STEP CARDS — New horizontal stepper feel

@@ -5,13 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PMS Generator</title>
     <link rel="icon" type="image/png" href="/static/images/logo.png">
-    <link rel="stylesheet" href="/static/css/styles.css?v=24">
+    <link rel="stylesheet" href="/static/css/styles.css?v=25">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
     <header class="top-nav">
         <div class="nav-left">
+            <button type="button" class="sidebar-toggle" id="sidebarToggle" title="Toggle sidebar" aria-label="Toggle sidebar">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
             <div class="logo">
                 <img src="/static/images/logo.png" alt="Logo" class="logo-img" onerror="this.style.display='none'">
                 <div class="logo-divider"></div>
@@ -21,121 +24,165 @@
                 </div>
             </div>
         </div>
-        <nav class="nav-tabs">
-            <a href="#" class="nav-tab active" data-tab="generate">Generate PMS</a>
-        </nav>
+        <div class="nav-center" id="navStatus"></div>
         <div class="nav-right">
             <div class="api-badge" id="apiBadge"><span class="dot"></span> API</div>
         </div>
     </header>
 
-    <main class="main">
-        <section class="tab-panel active" id="tab-generate">
-
-            <div class="step-card">
-                <div class="step-badge">1</div>
-                <div class="step-header">
-                    <h2>PMS Identification</h2>
-                    <p>Select the piping class and material parameters for your specification.</p>
+    <div class="dashboard" id="dashboard">
+        <!-- ============================================================
+             SIDEBAR — sticky input panel: identification + design conditions
+             ============================================================ -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-section-title">
+                    <span class="ssec-num">1</span>
+                    <span>PMS Identification</span>
                 </div>
+                <form id="pmsForm" class="sidebar-form">
+                    <div class="form-group">
+                        <label for="pipingClass">Pressure Rating *</label>
+                        <select id="pipingClass" required>
+                            <option value="">-- Select Rating --</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="material">Material *</label>
+                        <select id="material" required>
+                            <option value="">-- Select Material --</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="corrosionAllowance">Corrosion Allowance *</label>
+                        <select id="corrosionAllowance" required>
+                            <option value="">-- Select C.A. --</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="serviceTrigger">Service Description *</label>
+                        <div class="multi-select" id="serviceMultiSelect">
+                            <button type="button" class="multi-select-trigger" id="serviceTrigger" aria-haspopup="listbox" aria-expanded="false">
+                                <span class="multi-select-label placeholder" id="serviceLabel">Select one or more services…</span>
+                                <span class="multi-select-arrow">&#9662;</span>
+                            </button>
+                            <div class="multi-select-panel" id="servicePanel" role="listbox" aria-multiselectable="true"></div>
+                            <input type="text" id="serviceOtherInput" class="multi-select-other-input" placeholder="Type your custom service description" style="display:none">
+                        </div>
+                        <input type="hidden" id="service" required>
+                    </div>
+                </form>
+            </div>
 
-                <div class="card">
-                    <form id="pmsForm" class="form-grid-4">
-                        <div class="form-group">
-                            <label for="pipingClass">Pressure Rating *</label>
-                            <select id="pipingClass" required>
-                                <option value="">-- Select Rating --</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="material">Material *</label>
-                            <select id="material" required>
-                                <option value="">-- Select Material --</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="corrosionAllowance">Corrosion Allowance *</label>
-                            <select id="corrosionAllowance" required>
-                                <option value="">-- Select C.A. --</option>
-                            </select>
-                        </div>
-                        <div class="form-group full-width">
-                            <label for="serviceTrigger">Service Description *</label>
-                            <div class="multi-select" id="serviceMultiSelect">
-                                <button type="button" class="multi-select-trigger" id="serviceTrigger" aria-haspopup="listbox" aria-expanded="false">
-                                    <span class="multi-select-label placeholder" id="serviceLabel">Select one or more services…</span>
-                                    <span class="multi-select-arrow">&#9662;</span>
-                                </button>
-                                <div class="multi-select-panel" id="servicePanel" role="listbox" aria-multiselectable="true"></div>
-                                <input type="text" id="serviceOtherInput" class="multi-select-other-input" placeholder="Type your custom service description" style="display:none">
-                            </div>
-                            <input type="hidden" id="service" required>
-                        </div>
-                    </form>
+            <!-- Live class-code preview as user fills in inputs. Populated by app.js -->
+            <div id="classResolution" class="sidebar-resolution" style="display:none"></div>
+
+            <div class="sidebar-section sidebar-design" id="sidebarDesign" style="display:none">
+                <div class="sidebar-section-title">
+                    <span class="ssec-num">2</span>
+                    <span>Design Conditions</span>
                 </div>
-
-                <!-- Class resolution panel — populated by app.js whenever
-                     Rating + Material + Corrosion Allowance are all chosen.
-                     Shows the §5.5 class code, the matching ASME B16.5
-                     P-T table, and the design-conditions inputs. -->
-                <div id="classResolution" class="resolution-card" style="display:none"></div>
-
-                <!-- Generate action — sits below the resolution card so the
-                     user reviews the derived class + P-T + design point
-                     before committing. Disabled until inputs are valid. -->
-                <div class="generate-bar">
-                    <button type="button" class="btn btn-primary btn-lg" id="generateBtn" disabled>
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                        Generate PMS
-                    </button>
+                <div class="sidebar-form">
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label for="rDesignPressure">Design P (barg) *</label>
+                            <input type="number" id="rDesignPressure" step="0.1">
+                        </div>
+                        <div class="form-group">
+                            <label for="rDesignPressurePsig">Design P (psig)</label>
+                            <input type="number" id="rDesignPressurePsig" step="1">
+                        </div>
+                    </div>
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label for="rDesignTemperature">Design T (°C) *</label>
+                            <input type="number" id="rDesignTemperature" step="1">
+                            <span class="hint" id="rTempFahrenheit"></span>
+                        </div>
+                        <div class="form-group">
+                            <label for="rMdmt">MDMT (°C)</label>
+                            <input type="number" id="rMdmt" step="1" value="-29">
+                            <span class="hint" id="rMdmtFahrenheit"></span>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="rJointType">Joint Type</label>
+                        <select id="rJointType">
+                            <option value="Seamless">Seamless (E = 1.0)</option>
+                            <option value="EFW, 100% RT">EFW, 100% RT (E = 1.0)</option>
+                            <option value="ERW">ERW (E = 0.85)</option>
+                            <option value="EFW">EFW (E = 0.85)</option>
+                        </select>
+                        <span class="hint" id="rJointRef">ASME B31.3 Table A-1B</span>
+                    </div>
+                    <details class="sidebar-advanced">
+                        <summary>Advanced overrides</summary>
+                        <div class="form-group">
+                            <label for="rCase1Pressure">Case 1 P override (psig)</label>
+                            <input type="number" id="rCase1Pressure" step="1" placeholder="Auto from P-T">
+                        </div>
+                        <div class="form-group">
+                            <label for="rCase1Stress">Case 1 Stress S₁ (psi)</label>
+                            <input type="number" id="rCase1Stress" step="100" placeholder="Auto">
+                        </div>
+                        <div class="form-group">
+                            <label for="rCase2Stress">Case 2 Stress S₂ (psi)</label>
+                            <input type="number" id="rCase2Stress" step="100" placeholder="Auto">
+                        </div>
+                    </details>
                 </div>
             </div>
 
-            <!-- ============================================================
-                 GENERATED PMS REPORT
-                 Hidden until Generate PMS clicked. Three tabulated values
-                 (Material Grade, Flange Ref, S₁/S₂) are intentionally blank
-                 placeholders — wired in once a data source is decided.
-                 ============================================================ -->
-            <div class="report-panel" id="reportPanel" style="display:none">
+            <div class="sidebar-footer">
+                <button type="button" class="btn btn-primary btn-block" id="downloadExcelBtn" disabled>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+                    Download Excel
+                </button>
+            </div>
+        </aside>
 
-                <div class="report-toolbar">
-                    <button type="button" class="btn btn-outline btn-sm" id="backToFormBtn">&larr; Back to inputs</button>
-                    <div class="report-toolbar-spacer"></div>
-                    <button type="button" class="btn btn-primary btn-sm" id="downloadExcelBtn">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
-                        Download Excel
-                    </button>
+        <!-- ============================================================
+             MAIN PANE — report tabs + content
+             ============================================================ -->
+        <main class="dashboard-main" id="dashboardMain">
+            <!-- Empty state shown until class is resolved -->
+            <div class="empty-state" id="emptyState">
+                <div class="empty-state-icon">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M9 11H3v9h6v-9z"/><path d="M21 4H9v16h12V4z"/><path d="M14 8h3"/><path d="M14 12h3"/><path d="M14 16h3"/>
+                    </svg>
                 </div>
+                <h2>Configure your piping class</h2>
+                <p>Select a Pressure Rating, Material, Corrosion Allowance, and Service in the sidebar to begin. The PMS report will populate automatically.</p>
+            </div>
 
-                <!-- Generated-PMS banner — class code, input pills, internal
-                     id, and a Regenerate-with-AI affordance. Populated by JS
-                     in showReport(). -->
+            <div class="report-panel" id="reportPanel" style="display:none">
+                <button type="button" class="btn btn-ghost btn-sm" id="backToFormBtn" style="display:none">&larr;</button>
+
+                <!-- Generated-PMS banner — class code, input pills, internal id -->
                 <div class="pms-code-banner" id="rPmsBanner"></div>
 
-                <!-- Tab navigation. Numbers continue from Step 1, so the first
-                     report tab is "2". Sticky on scroll so users can switch
-                     tabs without scrolling back to the top. -->
+                <!-- Tab navigation — sticky -->
                 <nav class="report-tabs" id="reportTabs">
                     <button type="button" class="report-tab active" data-rtab="pt">
-                        <span class="report-tab-num">2</span> P-T Rating
+                        <span class="report-tab-num">1</span> P-T Rating
                     </button>
                     <button type="button" class="report-tab" data-rtab="schedule">
-                        <span class="report-tab-num">3</span> Schedule &amp; Wall Thickness
+                        <span class="report-tab-num">2</span> Schedule &amp; Wall Thickness
                     </button>
                     <button type="button" class="report-tab" data-rtab="materials">
-                        <span class="report-tab-num">4</span> Pipe &amp; Fittings Material
+                        <span class="report-tab-num">3</span> Pipe &amp; Fittings Material
                     </button>
                     <button type="button" class="report-tab" data-rtab="components">
-                        <span class="report-tab-num">5</span> Components &amp; Notes
+                        <span class="report-tab-num">4</span> Components &amp; Notes
                     </button>
                     <button type="button" class="report-tab" data-rtab="datasheet">
-                        <span class="report-tab-num">6</span> Datasheet (Excel View)
+                        <span class="report-tab-num">5</span> Datasheet (Excel View)
                     </button>
                 </nav>
 
                 <!-- ============================================================
-                     TAB 2 · Pressure-Temperature Rating
+                     TAB 1 · Pressure-Temperature Rating
                      ============================================================ -->
                 <div class="report-tab-content active" data-rtab="pt">
                     <div class="report-header">
@@ -152,69 +199,6 @@
                     </div>
 
                     <div class="adequacy-box" id="rAdequacyBox"></div>
-
-                    <div class="card">
-                        <div class="card-title"><span class="icon">&#9881;</span> Actual Process Design Conditions</div>
-                        <p class="card-subtitle">Enter the actual process design conditions for this piping class.</p>
-                        <div class="form-grid-2">
-                            <div class="form-group">
-                                <label for="rDesignPressure">Design Pressure (barg) *</label>
-                                <input type="number" id="rDesignPressure" step="0.1">
-                                <span class="hint">Two-way synced with psig field</span>
-                            </div>
-                            <div class="form-group">
-                                <label for="rDesignPressurePsig">Design Pressure (psig)</label>
-                                <input type="number" id="rDesignPressurePsig" step="1">
-                                <span class="hint">Used for Case 2 (@ design T)</span>
-                            </div>
-                            <div class="form-group">
-                                <label for="rCase1Pressure">Case 1 Pressure Override (psig)</label>
-                                <input type="number" id="rCase1Pressure" step="1" placeholder="Auto from P-T table">
-                                <span class="hint">Optional</span>
-                            </div>
-                            <div class="form-group">
-                                <label for="rCase1Stress">Case 1 Stress S&#8321; Override (psi)</label>
-                                <input type="number" id="rCase1Stress" step="100" placeholder="Auto from material">
-                                <span class="hint">Optional — required once stress source is wired</span>
-                            </div>
-                            <div class="form-group">
-                                <label for="rCase2Stress">Case 2 Stress S&#8322; Override (psi)</label>
-                                <input type="number" id="rCase2Stress" step="100" placeholder="Auto from material">
-                                <span class="hint">Optional — required once stress source is wired</span>
-                            </div>
-                            <div class="form-group">
-                                <label for="rDesignTemperature">Design Temperature (&deg;C) *</label>
-                                <input type="number" id="rDesignTemperature" step="1">
-                                <span class="hint" id="rTempFahrenheit"></span>
-                            </div>
-                            <div class="form-group">
-                                <label for="rMdmt">Min Design Metal Temp &mdash; MDMT (&deg;C)</label>
-                                <input type="number" id="rMdmt" step="1" value="-29">
-                                <span class="hint" id="rMdmtFahrenheit"></span>
-                            </div>
-                            <div class="form-group">
-                                <label for="rJointType">Joint Type</label>
-                                <select id="rJointType">
-                                    <option value="Seamless">Seamless (E = 1.0)</option>
-                                    <option value="EFW, 100% RT">EFW, 100% RT (E = 1.0)</option>
-                                    <option value="ERW">ERW (E = 0.85)</option>
-                                    <option value="EFW">EFW (E = 0.85)</option>
-                                </select>
-                                <span class="hint" id="rJointRef">ASME B31.3 Table A-1B</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="two-col">
-                        <div class="card">
-                            <div class="card-title-underline">PMS Inputs (from Step 1)</div>
-                            <div class="kv-list" id="rPmsInputsList"></div>
-                        </div>
-                        <div class="card">
-                            <div class="card-title-underline">Service &amp; Material</div>
-                            <div class="kv-list" id="rServiceMaterialList"></div>
-                        </div>
-                    </div>
 
                     <div class="derived-banner">
                         <strong>Derived Design Conditions</strong> (auto-calculated from your inputs above)
@@ -401,10 +385,9 @@
                     <div id="rDatasheet" class="ds-container"></div>
                 </div>
 
-            </div>
-
-        </section>
-    </main>
+            </div><!-- /#reportPanel -->
+        </main><!-- /.dashboard-main -->
+    </div><!-- /.dashboard -->
 
     <div class="loading-overlay" id="loadingOverlay">
         <div class="loading-box">
@@ -417,6 +400,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=32"></script>
+    <script src="/static/js/app.js?v=33"></script>
 </body>
 </html>

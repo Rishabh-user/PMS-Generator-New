@@ -237,25 +237,11 @@ function populateBanner(state) {
     ].join('');
 
     banner.innerHTML = `
-        <div class="pms-banner-header">Generated PMS Code</div>
+        <div class="pms-banner-header">Resolved §5.5 PMS Code</div>
         <div class="pms-banner-code">${escapeHtml(state.classCode)}</div>
         <div class="pms-banner-details">${pillsHtml}</div>
         <div class="pms-banner-id">PMS-${escapeHtml(state.classCode)}</div>
-        <div class="pms-banner-action">
-            <button type="button" class="btn btn-regenerate" id="rRegenerateBtn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
-                Regenerate with AI
-            </button>
-        </div>
     `;
-
-    const regenBtn = document.getElementById('rRegenerateBtn');
-    if (regenBtn) {
-        regenBtn.addEventListener('click', () => {
-            // Placeholder until ANTHROPIC_API_KEY + regen endpoint are wired.
-            showToast('AI regeneration not wired yet — pending key + endpoint.', 'info', 4000);
-        });
-    }
 }
 
 function populatePmsInputs(state) {
@@ -1990,21 +1976,26 @@ function wireReportTabs() {
 }
 
 function showReport(state) {
+    // Dashboard layout: hide empty state, show report pane + design-conditions
+    // sidebar section. Inputs remain visible (sidebar is sticky).
+    const empty = document.getElementById('emptyState');
+    if (empty) empty.style.display = 'none';
     document.getElementById('reportPanel').style.display = 'block';
-    // Hide everything in Step 1 except the panel itself — keep navigation
-    // stable but get the form, resolution card, and generate bar out of view.
-    document.getElementById('pmsForm').parentElement.style.display = 'none';
-    document.getElementById('classResolution').style.display = 'none';
-    document.querySelector('.generate-bar').style.display = 'none';
+    const dl = document.getElementById('sidebarDesign');
+    if (dl) dl.style.display = '';
+    const dx = document.getElementById('downloadExcelBtn');
+    if (dx) dx.disabled = false;
 
-    // Pre-fill the editable design conditions from Step 1.
-    document.getElementById('rDesignPressure').value    = fmt(state.designP, 1);
-    document.getElementById('rDesignPressurePsig').value = fmt(bargToPsig(state.designP), 1);
-    document.getElementById('rDesignTemperature').value = fmt(state.designT, 0);
+    // Pre-fill the editable design conditions ONLY if the user hasn't
+    // typed anything yet — preserve their edits across re-resolves.
+    const pIn = document.getElementById('rDesignPressure');
+    const pPsig = document.getElementById('rDesignPressurePsig');
+    const tIn = document.getElementById('rDesignTemperature');
+    if (pIn && !pIn.value) pIn.value = fmt(state.designP, 1);
+    if (pPsig && !pPsig.value) pPsig.value = fmt(bargToPsig(state.designP), 1);
+    if (tIn && !tIn.value) tIn.value = fmt(state.designT, 0);
 
     populateBanner(state);
-    populatePmsInputs(state);
-    populateServiceMaterial(state);
     populateStandardBar(state);
     wireReportInputs(state);
     wireReportTabs();
@@ -2025,65 +2016,36 @@ function showReport(state) {
         renderPipeFittingsTab(state, state.designP, state.designT);
         renderDatasheetTab(state, state.designP, state.designT);
     });
-    // Always land on the first tab when (re)opening the report.
-    document.querySelectorAll('.report-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
-    document.querySelectorAll('.report-tab-content').forEach((c, i) => c.classList.toggle('active', i === 0));
-
-    // Scroll to top of the report so the user lands at the title.
-    document.getElementById('reportPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Only force-reset to Tab 1 on the very first show — subsequent resolves
+    // (changing inputs while the report is up) preserve the user's tab.
+    if (!window._reportShown) {
+        document.querySelectorAll('.report-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
+        document.querySelectorAll('.report-tab-content').forEach((c, i) => c.classList.toggle('active', i === 0));
+        window._reportShown = true;
+    }
 }
 
 function hideReport() {
     document.getElementById('reportPanel').style.display = 'none';
-    document.getElementById('pmsForm').parentElement.style.display = '';
-    document.getElementById('classResolution').style.display = '';
-    document.querySelector('.generate-bar').style.display = '';
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    const empty = document.getElementById('emptyState');
+    if (empty) empty.style.display = '';
+    const dl = document.getElementById('sidebarDesign');
+    if (dl) dl.style.display = 'none';
+    const dx = document.getElementById('downloadExcelBtn');
+    if (dx) dx.disabled = true;
+    window._reportShown = false;
 }
 
 function wireForm() {
-    const btn = document.getElementById('generateBtn');
-    if (!btn) return;
-
-    btn.addEventListener('click', () => {
-        const rating   = document.getElementById('pipingClass').value.trim();
-        const material = document.getElementById('material').value.trim();
-        const ca       = document.getElementById('corrosionAllowance').value.trim();
-        const service  = document.getElementById('service').value.trim();
-        const designP  = parseFloat(document.getElementById('designPressure')?.value);
-        const designT  = parseFloat(document.getElementById('designTemperature')?.value);
-
-        const missing = { rating, material, ca, service };
-        const missingKeys = Object.entries(missing).filter(([, v]) => !v).map(([k]) => k);
-        if (missingKeys.length) {
-            showToast(`Please fill: ${missingKeys.join(', ')}`, 'error');
-            return;
-        }
-        if (Number.isNaN(designP) || Number.isNaN(designT)) {
-            showToast('Design pressure and temperature must be set before generating.', 'error');
-            return;
-        }
-
-        // The resolution card already cached its API response on dataset
-        // for handoff into the report — pull pt + class_code from there.
-        const cached = window._lastResolution || null;
-        if (!cached) {
-            showToast('Resolve the class before generating.', 'error');
-            return;
-        }
-
-        const state = {
-            rating, material, ca, service,
-            classCode: cached.class_code,
-            pt:        cached.pressure_temperature,
-            codeFactors: cached.code_factors || null,
-            designP, designT,
-        };
-        showReport(state);
-    });
-
-    const back = document.getElementById('backToFormBtn');
-    if (back) back.addEventListener('click', hideReport);
+    // Sidebar toggle (mobile / narrow screens)
+    const toggle = document.getElementById('sidebarToggle');
+    const sidebar = document.getElementById('sidebar');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', () => {
+            sidebar.classList.toggle('collapsed');
+            sidebar.classList.toggle('open');
+        });
+    }
 
     // Download Excel — pulls live design conditions from Tab 2 inputs so
     // the export reflects whatever the user is currently looking at.
@@ -2349,15 +2311,45 @@ function renderResolution(panel, data, inputs) {
     panel.classList.remove('derived', 'error');
     panel.classList.add('derived');
 
+    // Compact sidebar preview — class code prominent + small input pills.
+    const pills = [
+        inputs.rating,
+        (typeof cleanMaterial === 'function' ? cleanMaterial(inputs.material) : inputs.material),
+        inputs.ca,
+    ].filter(Boolean).map(p => `<span class="ds-class-pill">${escapeHtml(p)}</span>`).join('');
+
     panel.innerHTML = `
-        <div class="resolution-header">
-            <span class="resolution-code">${escapeHtml(data.class_code)}</span>
-        </div>
-        ${renderInputPills(inputs)}
-        ${renderPtTable(data.pressure_temperature)}
-        ${renderDesignConditions(data.pressure_temperature)}
+        <div class="ds-class-code">${escapeHtml(data.class_code)}</div>
+        <div class="ds-class-meta">Resolved §5.5 class</div>
+        <div class="ds-class-pills">${pills}</div>
     `;
-    wireDesignInputs(data.pressure_temperature);
+
+    // Also surface the class code in the top-nav center for orientation.
+    const navStatus = document.getElementById('navStatus');
+    if (navStatus) {
+        navStatus.innerHTML = `<span class="nav-status-pill">${escapeHtml(data.class_code)}</span>`;
+    }
+
+    // Seed design-conditions defaults so showReport() can pre-fill if empty.
+    // Cold-rated point is the safest starting design pressure.
+    const pt = data.pressure_temperature || {};
+    const coldP = (pt.cold_point && pt.cold_point.pressure_barg) || (pt.pressures_barg || [0])[0] || 0;
+    const designT = (pt.temperatures_c || [38])[0] || 38;
+
+    const state = {
+        rating:      inputs.rating,
+        material:    inputs.material,
+        ca:          inputs.ca,
+        service:     inputs.service || '',
+        classCode:   data.class_code,
+        pt:          data.pressure_temperature,
+        codeFactors: data.code_factors || null,
+        designP:     coldP,
+        designT:     designT,
+    };
+    // Cache for the Excel-download handler and any re-render.
+    window._currentState = state;
+    showReport(state);
 }
 
 function renderResolutionError(panel, message) {
@@ -2365,11 +2357,13 @@ function renderResolutionError(panel, message) {
     panel.classList.remove('derived');
     panel.classList.add('error');
     panel.innerHTML = `
-        <div class="resolution-header">
-            <span class="resolution-tag error">Cannot resolve</span>
-        </div>
-        <div class="resolution-note">${escapeHtml(message)}</div>
+        <div class="ds-class-code" style="font-size:0.95rem">Cannot resolve</div>
+        <div class="ds-class-meta">${escapeHtml(message)}</div>
     `;
+    // Hide report + revert to empty state until inputs are valid again.
+    hideReport();
+    const navStatus = document.getElementById('navStatus');
+    if (navStatus) navStatus.innerHTML = '';
 }
 
 function initClassResolver() {
@@ -2380,10 +2374,8 @@ function initClassResolver() {
     const service  = document.getElementById('service');
     if (!panel || !rating || !material || !ca) return;
 
-    // Sequence-protect against fast clicks: only the latest request wins.
+    // Sequence-protect against fast input edits: only the latest request wins.
     let seq = 0;
-
-    const btn = document.getElementById('generateBtn');
 
     async function tryResolve() {
         const r = rating.value.trim();
@@ -2391,7 +2383,9 @@ function initClassResolver() {
         const c = ca.value.trim();
         if (!r || !m || !c) {
             panel.style.display = 'none';
-            if (btn) btn.disabled = true;
+            hideReport();
+            const navStatus = document.getElementById('navStatus');
+            if (navStatus) navStatus.innerHTML = '';
             return;
         }
         const my = ++seq;
@@ -2402,23 +2396,19 @@ function initClassResolver() {
                 corrosion_allowance: c,
                 service: service ? service.value : '',
             });
-            if (my !== seq) return;  // a newer request landed
+            if (my !== seq) return;
             const data = await res.json();
             if (!res.ok) {
                 renderResolutionError(panel, data.detail || `HTTP ${res.status}`);
-                if (btn) btn.disabled = true;
                 return;
             }
+            window._lastResolution = data;
             renderResolution(panel, data, {
                 rating:   r,
                 material: m,
                 ca:       c,
                 service:  service ? service.value : '',
             });
-            // Cache for the Generate-PMS handler — the report needs the
-            // class code + P-T data resolved by this call.
-            window._lastResolution = data;
-            if (btn) btn.disabled = false;
         } catch (e) {
             if (my !== seq) return;
             renderResolutionError(panel, `Network error: ${e}`);
@@ -2426,8 +2416,6 @@ function initClassResolver() {
     }
 
     [rating, material, ca].forEach(el => el.addEventListener('change', tryResolve));
-    // The hidden #service field is updated by the multi-select sync — listen
-    // for input on it so service changes also refresh the resolution.
     if (service) service.addEventListener('input', tryResolve);
 }
 
