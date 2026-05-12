@@ -1,47 +1,36 @@
 """PMS-Agent chat — natural-language slot filling on top of the new
 class_resolver / options catalog.
 
-Front-end contract (kept compatible with the old pms-generator backend so
-the existing PMSAgentPage UI keeps working unchanged):
+Front-end contract (kept backward-compatible with the PMSAgentPage UI):
 
     Request:
         { prompt: str, history: [{role, content}, ...] }
 
     Response:
         {
-            reply: str,
-            interpreted: {
-                piping_class, rating, material, corrosion_allowance, service,
-                design_temp_c, design_pressure_barg, intent
-            },
-            matched_classes: [
-                { piping_class, rating, material, corrosion_allowance,
-                  pt_preview, score }
-            ],
-            suggested_action: {
-                type, piping_class, material, corrosion_allowance, service,
-                design_pressure_barg, design_temp_c
-            },
-            slots: {
-                rating, material, corrosion_allowance, service,
-                missing: [...], complete: bool
-            },
-            field_suggestions: [
-                { field, provided, suggestions: [...] }
-            ],
-            available_values: { rating?, material?, corrosion_allowance?, service? },
-            allow_bulk_download: bool,
+            reply, interpreted, matched_classes, suggested_action,
+            slots: { rating, material, corrosion_allowance, service,
+                     missing, complete,
+                     # multi-value extensions (additive, optional):
+                     ratings, materials, corrosion_allowances, services,
+                     exclusions, rating_min, rating_max },
+            field_suggestions, available_values, allow_bulk_download,
         }
 
 How it works:
-  1. Claude extracts slot values from the user's prompt + history.
-  2. Each extracted value is validated against the catalog (the four
-     options JSON files). Mis-spellings produce did-you-mean suggestions.
-  3. When all 4 slots are filled, class_resolver.resolve() produces the
-     class code → one match card.
-  4. When 3 slots are filled, the missing dimension's catalog values are
-     enumerated and resolved → many match cards (bulk download enabled).
-  5. When <3 slots filled, the response asks for the next missing slot.
+  1. Claude extracts ARRAYS of slot values + exclusion flags + numeric
+     range from the user's prompt + history (multi-value friendly).
+  2. Each value is validated against the catalog; mis-spellings produce
+     did-you-mean suggestions.
+  3. Filters are applied: rating range narrows the rating set, exclusion
+     flags remove NACE / LTCS variants from materials.
+  4. Enumeration: the cartesian product of filtered ratings × materials ×
+     CAs is resolved to class codes. Empty filters mean "all" for that
+     dimension. Cap defaults to 60; ranked by score so the most relevant
+     show first.
+  5. ANY filter (even just one slot) triggers enumeration — the old
+     "need 2+ slots" gate is gone. With zero filters we still ask for
+     more info instead of dumping the entire catalog.
 """
 from __future__ import annotations
 
@@ -60,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Catalog loaders (single source of truth: app/data/*.json)
+# Catalog loaders
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
@@ -79,7 +68,6 @@ def _catalog() -> dict:
 
 
 def reload_catalog() -> None:
-    """Drop the cached JSON so tests / re-extracts pick up edits."""
     _catalog.cache_clear()
 
 
@@ -92,7 +80,6 @@ def _norm(s: Optional[str]) -> str:
 
 
 def _match_catalog(value: str, candidates: list[str]) -> Optional[str]:
-    """Exact (case-insensitive) match against the canonical catalog values."""
     if not value:
         return None
     target = _norm(value)
@@ -103,7 +90,6 @@ def _match_catalog(value: str, candidates: list[str]) -> Optional[str]:
 
 
 def _suggest(value: str, candidates: list[str], n: int = 3) -> list[str]:
-    """Up to `n` did-you-mean candidates ranked by similarity."""
     if not value:
         return []
     target = _norm(value)
@@ -116,65 +102,111 @@ def _suggest(value: str, candidates: list[str], n: int = 3) -> list[str]:
     return [c for _r, c in scored[:n]]
 
 
+def _rating_to_num(rating: str) -> Optional[float]:
+    """'150#' → 150, '1500#' → 1500, 'Tubing' → None."""
+    m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*#?\s*$", rating or "")
+    return float(m.group(1)) if m else None
+
+
 # ---------------------------------------------------------------------------
-# Claude — slot extraction
+# Claude extraction
 # ---------------------------------------------------------------------------
 
 _EXTRACT_SYSTEM_PROMPT = """\
-You are the natural-language router for a Piping Material Specification (PMS)
-chat assistant. Your only job: read the user's latest message PLUS the
-conversation history and extract structured slot values.
+You are the natural-language router for a Piping Material Specification
+(PMS) chat assistant. Read the user's latest message PLUS the full
+conversation history and extract structured filters.
 
-Output STRICT JSON with this schema (no markdown, no preamble):
+Output STRICT JSON with this schema (no markdown, no preamble, no prose):
 
 {
-  "rating":               "<one of the catalog rating strings> | null",
-  "material":             "<one of the catalog material strings, or a free-text guess if not in catalog> | null",
-  "corrosion_allowance":  "<one of NIL / 1.5 mm / 3 mm / 6 mm> | null",
-  "service":              "<one of the catalog service strings, or free text> | null",
-  "design_temp_c":        "<number> | null",
-  "design_pressure_barg": "<number> | null",
-  "intent":               "generate | list | info | unknown",
-  "reply":                "<one short conversational sentence asking for the next missing field, or confirming what you understood>"
+  "ratings":              ["<canonical rating>", ...]   // see CATALOG below
+  "materials":            ["<canonical material>", ...] // see CATALOG below
+  "corrosion_allowances": ["<canonical CA>", ...]       // NIL | 1.5 mm | 3 mm | 6 mm
+  "services":             ["<canonical service>", ...]  // see CATALOG below; multi-OK
+  "exclude_nace":         <bool>     // true if user says "no NACE" / "exclude NACE" / "non-sour"
+  "exclude_low_temp":     <bool>     // true if user says "no LTCS" / "exclude low temperature"
+  "rating_min":           <number|null>  // psi value (e.g. 900) for "above 900"
+  "rating_min_inclusive": <bool>          // true for "≥ 900" / "at least 900"; false for "above 900"
+  "rating_max":           <number|null>
+  "rating_max_inclusive": <bool>
+  "design_temp_c":        <number|null>
+  "design_pressure_barg": <number|null>
+  "intent":               "generate" | "list" | "info" | "unknown"
+  "reply":                "<one short conversational sentence>"
 }
 
-Rules:
-- Read the FULL history — slots carry forward. If the user said "150# CS 3mm"
-  earlier and now says "Service: Steam", all four slots are filled.
-- Output canonical strings whenever you can map to a catalog entry. Examples:
-  "150 lb" → "150#", "carbon steel" → "CS", "stainless 316" → "SS316L",
-  "3mm" / "3 mm" / "three mm" → "3 mm", "no CA" / "nil" → "NIL",
-  "sour" / "NACE" applied to CS → "CS NACE".
-- If the user names something not in the catalog (e.g. "Inconel"), still
-  return their wording — the backend will detect the mismatch and suggest
-  alternatives. Don't invent a canonical string.
-- "intent": "generate" = wants a PMS / Excel; "list" = wants to see options;
-  "info" = wants explanation; "unknown" otherwise.
-- Numbers must be plain JSON numbers, not strings.
-- Output JSON ONLY. No code fences, no commentary.
+# CATALOG
+Ratings: 150#, 300#, 600#, 900#, 1500#, 2500#, 5000#, 10000#, EEMUA 20 bar,
+         Tubing, Tubing A, Tubing B, Tubing C
+
+Materials: CS, CS NACE, LTCS, LTCS NACE, CS GALV (Valve: SS), CS GALV,
+           CS - Epoxy Lined, SS316L, SS316L NACE, DSS, DSS NACE, SDSS,
+           SDSS NACE, CuNi (Valve: NAB), Copper, GRE (Valve: NAB),
+           CPVC (Valve: NAB), TITANIUM, SS 316 / 316L (Tubing), 6 MO Tubing
+
+Corrosion Allowances: NIL, 1.5 mm, 3 mm, 6 mm
+
+Services (sample — pass through free text if not exact):
+  Cooling Media, Heating Media, Diesel, Steam, Water Injection, Fresh Water,
+  Hydraulic Oil, Nitrogen, Exhaust, Fuel Oil, Tank Air Vent, Glycol, FG,
+  Hydro Carbon service, Corrosive Hydro Carbon service, Flare,
+  Hydro Carbon service (Low Temp), Gas Lift, Utility Water, Bilge, Sewage,
+  Seawater, Firewater, Air, Lube oil, Chemical, Foam, Instrument Air,
+  Diesel Fuel, Raw Sea Water, Potable Water, Hypochlorite,
+  Chemical (Ferric chloride), Coagulant, Chemical Injection (Except Hypochlorite)
+
+# RULES
+1. ARRAYS: every slot is an array. Single value → 1-element array. None → [].
+2. CANONICALISE aggressively when there's an obvious match:
+     "150 lb" / "150lb" / "class 150"   → ["150#"]
+     "carbon steel"                     → ["CS"]
+     "stainless 316"                    → ["SS316L"]
+     "duplex" / "duplex stainless"      → ["DSS"]
+     "super duplex"                     → ["SDSS"]
+     "sour" / "NACE" (as a material qualifier with CS) → ["CS NACE"]
+     "low temperature carbon steel"     → ["LTCS"]
+     "3mm" / "three mm"                 → ["3 mm"]
+     "no CA" / "nil"                    → ["NIL"]
+     "hydraulic oil"                    → ["Hydraulic Oil"]
+     "corrosive hydrocarbon"            → ["Corrosive Hydro Carbon service"]
+3. MULTI-VALUE within a field is OR:
+     "DSS or SDSS"                      → materials: ["DSS", "SDSS"]
+     "Glycol, FG, Hydro Carbon service" → services: ["Glycol", "FG", "Hydro Carbon service"]
+4. CROSS-FIELD is AND. The match must satisfy every field's filter.
+5. CONCEPTUAL MAPPING — expand semantic descriptors to concrete catalog values:
+     "corrosion-resistant material"     → ["SS316L", "SS316L NACE", "DSS", "DSS NACE", "SDSS", "SDSS NACE"]
+     "sour service" / "NACE compliance" → mark exclude_nace=false AND filter materials to NACE variants only when context allows
+     "low temperature hydrocarbon"      → materials: ["LTCS", "LTCS NACE"], services: ["Hydro Carbon service (Low Temp)"]
+     "seawater handling"                → materials: ["CuNi (Valve: NAB)", "Copper", "SS316L", "GRE (Valve: NAB)"]
+6. EXCLUSION:
+     "no NACE" / "exclude NACE" / "non-sour"     → exclude_nace=true
+     "no LTCS" / "exclude low temperature"       → exclude_low_temp=true
+7. NUMERIC RANGE on rating:
+     "above 900"          → rating_min=900, rating_min_inclusive=false
+     "≥ 600" / "at least 600" → rating_min=600, rating_min_inclusive=true
+     "below 1500"         → rating_max=1500, rating_max_inclusive=false
+     "between 300 and 900" → rating_min=300, rating_max=900, both inclusive
+8. NACE COMPLIANCE: when the user asks for "NACE compliance" without
+   naming a specific material, populate materials with the NACE variants:
+     "NACE compliance"                  → ["CS NACE", "LTCS NACE", "SS316L NACE", "DSS NACE", "SDSS NACE"]
+   When the user asks for a specific material WITH "NACE", canonicalise
+   to that specific NACE variant (e.g. "DSS with NACE" → ["DSS NACE"]).
+9. Numbers are JSON numbers, not strings. Booleans default to false.
+10. Output JSON ONLY. No code fences, no commentary.
 """
 
 
-def _extract_slots_with_claude(prompt: str, history: list[dict]) -> dict:
-    """Call Claude to extract slots. Falls back to an empty dict when the
-    key isn't configured or the call fails — the route then renders the
-    "AI not configured" reply path."""
+def _extract_filters_with_claude(prompt: str, history: list[dict]) -> dict:
+    """Call Claude to extract structured filters. Falls back to a stub
+    when the key isn't configured or the call fails."""
     if not ai_service.is_available():
-        return {
-            "rating":              None,
-            "material":            None,
-            "corrosion_allowance": None,
-            "service":             None,
-            "design_temp_c":       None,
-            "design_pressure_barg": None,
-            "intent":              "unknown",
-            "reply":               (
-                "AI is not configured on this server. Ask the operator to set "
-                "ANTHROPIC_API_KEY in the backend .env."
-            ),
-        }
+        return _empty_extraction(
+            "AI is not configured on this server. Ask the operator to set "
+            "ANTHROPIC_API_KEY in the backend .env."
+        )
 
-    client = ai_service._client_or_none()  # noqa: SLF001 — internal but stable
+    client = ai_service._client_or_none()  # noqa: SLF001
     if client is None:
         return _empty_extraction("AI client unavailable; check ANTHROPIC_API_KEY.")
 
@@ -189,7 +221,7 @@ def _extract_slots_with_claude(prompt: str, history: list[dict]) -> dict:
     try:
         response = client.messages.create(
             model=settings.anthropic_model,
-            max_tokens=600,
+            max_tokens=900,
             system=[{
                 "type": "text",
                 "text": _EXTRACT_SYSTEM_PROMPT,
@@ -207,14 +239,20 @@ def _extract_slots_with_claude(prompt: str, history: list[dict]) -> dict:
 
 def _empty_extraction(reply: str) -> dict:
     return {
-        "rating":              None,
-        "material":            None,
-        "corrosion_allowance": None,
-        "service":             None,
-        "design_temp_c":       None,
+        "ratings": [],
+        "materials": [],
+        "corrosion_allowances": [],
+        "services": [],
+        "exclude_nace": False,
+        "exclude_low_temp": False,
+        "rating_min": None,
+        "rating_min_inclusive": False,
+        "rating_max": None,
+        "rating_max_inclusive": False,
+        "design_temp_c": None,
         "design_pressure_barg": None,
-        "intent":              "unknown",
-        "reply":               reply,
+        "intent": "unknown",
+        "reply": reply,
     }
 
 
@@ -231,89 +269,188 @@ def _parse_extraction(raw: str) -> dict:
         except json.JSONDecodeError:
             return _empty_extraction("Sorry — I couldn't understand that. Try again.")
 
+    def _arr(v: Any) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if isinstance(v, str) and v.strip():
+            return [v.strip()]
+        return []
+
+    def _num(v: Any) -> Optional[float]:
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _bool(v: Any) -> bool:
+        return bool(v) if v is not None else False
+
     return {
-        "rating":              _clean_str(parsed.get("rating")),
-        "material":            _clean_str(parsed.get("material")),
-        "corrosion_allowance": _clean_str(parsed.get("corrosion_allowance")),
-        "service":             _clean_str(parsed.get("service")),
-        "design_temp_c":       _clean_num(parsed.get("design_temp_c")),
-        "design_pressure_barg": _clean_num(parsed.get("design_pressure_barg")),
-        "intent":              _clean_str(parsed.get("intent")) or "unknown",
-        "reply":               _clean_str(parsed.get("reply")) or "",
+        "ratings":              _arr(parsed.get("ratings")),
+        "materials":            _arr(parsed.get("materials")),
+        "corrosion_allowances": _arr(parsed.get("corrosion_allowances")),
+        "services":             _arr(parsed.get("services")),
+        "exclude_nace":         _bool(parsed.get("exclude_nace")),
+        "exclude_low_temp":     _bool(parsed.get("exclude_low_temp")),
+        "rating_min":           _num(parsed.get("rating_min")),
+        "rating_min_inclusive": _bool(parsed.get("rating_min_inclusive")),
+        "rating_max":           _num(parsed.get("rating_max")),
+        "rating_max_inclusive": _bool(parsed.get("rating_max_inclusive")),
+        "design_temp_c":        _num(parsed.get("design_temp_c")),
+        "design_pressure_barg": _num(parsed.get("design_pressure_barg")),
+        "intent":               (parsed.get("intent") or "unknown") if isinstance(parsed.get("intent"), str) else "unknown",
+        "reply":                (parsed.get("reply") or "").strip(),
     }
 
 
-def _clean_str(v: Any) -> Optional[str]:
-    if v is None:
-        return None
-    s = str(v).strip()
-    if not s or s.lower() in ("null", "none", ""):
-        return None
-    return s
-
-
-def _clean_num(v: Any) -> Optional[float]:
-    if v is None or v == "":
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
-
 # ---------------------------------------------------------------------------
-# Slot validation
+# Slot validation (per-field array → canonical array + suggestions)
 # ---------------------------------------------------------------------------
 
-def _validate_slot(field: str, value: Optional[str]) -> tuple[Optional[str], Optional[dict]]:
-    """Validate an extracted slot value against the catalog. Returns
-    (canonical_value_or_none, optional_field_suggestion_dict).
-
-    Service slot allows custom free text (services.json: allow_custom: true)
-    so any non-blank string passes through verbatim.
-    """
-    if not value:
-        return None, None
+def _validate_list(
+    field: str, values: list[str],
+) -> tuple[list[str], list[dict]]:
+    """Validate each value. Service slot is free-text so anything passes;
+    other slots are constrained to the catalog (with suggestions on miss)."""
+    if not values:
+        return [], []
 
     cat = _catalog()
-    if field == "rating":
-        match = _match_catalog(value, cat["ratings"])
-        if match:
-            return match, None
-        return None, {
-            "field": field,
-            "provided": value,
-            "suggestions": _suggest(value, cat["ratings"]),
-        }
-    if field == "material":
-        match = _match_catalog(value, cat["materials"])
-        if match:
-            return match, None
-        return None, {
-            "field": field,
-            "provided": value,
-            "suggestions": _suggest(value, cat["materials"]),
-        }
-    if field == "corrosion_allowance":
-        match = _match_catalog(value, cat["corrosion_allowances"])
-        if match:
-            return match, None
-        return None, {
-            "field": field,
-            "provided": value,
-            "suggestions": _suggest(value, cat["corrosion_allowances"]),
-        }
-    if field == "service":
-        match = _match_catalog(value, cat["services"])
-        if match:
-            return match, None
-        # Service is free-text — accept as-is, no suggestion required.
-        return value, None
-    return None, None
+    candidates = {
+        "rating": cat["ratings"],
+        "material": cat["materials"],
+        "corrosion_allowance": cat["corrosion_allowances"],
+        "service": cat["services"],
+    }[field]
+
+    canonical: list[str] = []
+    suggestions: list[dict] = []
+    seen: set[str] = set()
+
+    for v in values:
+        if field == "service":
+            # Free text — accept verbatim. Try exact-catalog match first
+            # so capitalisation normalises.
+            m = _match_catalog(v, candidates)
+            chosen = m or v
+            if chosen not in seen:
+                canonical.append(chosen)
+                seen.add(chosen)
+            continue
+        m = _match_catalog(v, candidates)
+        if m:
+            if m not in seen:
+                canonical.append(m)
+                seen.add(m)
+        else:
+            suggestions.append({
+                "field": field,
+                "provided": v,
+                "suggestions": _suggest(v, candidates),
+            })
+    return canonical, suggestions
 
 
 # ---------------------------------------------------------------------------
-# Match-card builders
+# Filter assembly
+# ---------------------------------------------------------------------------
+
+def _apply_rating_range(
+    ratings: list[str],
+    rmin: Optional[float], rmin_incl: bool,
+    rmax: Optional[float], rmax_incl: bool,
+) -> list[str]:
+    """Filter the rating list by numeric bounds. Non-numeric ratings
+    (Tubing / EEMUA) pass through only when no bound is set."""
+    if rmin is None and rmax is None:
+        return ratings
+    out: list[str] = []
+    for r in ratings:
+        n = _rating_to_num(r)
+        if n is None:
+            continue  # Tubing / EEMUA — excluded from numeric range queries
+        if rmin is not None:
+            if rmin_incl:
+                if n < rmin:
+                    continue
+            else:
+                if n <= rmin:
+                    continue
+        if rmax is not None:
+            if rmax_incl:
+                if n > rmax:
+                    continue
+            else:
+                if n >= rmax:
+                    continue
+        out.append(r)
+    return out
+
+
+def _apply_material_exclusions(
+    materials: list[str], exclude_nace: bool, exclude_low_temp: bool,
+) -> list[str]:
+    out: list[str] = []
+    for m in materials:
+        u = m.upper()
+        if exclude_nace and "NACE" in u:
+            continue
+        if exclude_low_temp and (u.startswith("LTCS") or "LOW TEMP" in u):
+            continue
+        out.append(m)
+    return out
+
+
+def _resolve_filter_sets(extracted: dict) -> dict:
+    """Combine validation + range + exclusion to produce the final
+    filter sets used for enumeration."""
+    canonical_ratings, rating_suggestions = _validate_list("rating", extracted["ratings"])
+    canonical_materials, material_suggestions = _validate_list("material", extracted["materials"])
+    canonical_cas, ca_suggestions = _validate_list("corrosion_allowance", extracted["corrosion_allowances"])
+    canonical_services, _service_suggestions = _validate_list("service", extracted["services"])
+
+    cat = _catalog()
+    # Default to entire catalog when filter is empty for that dimension.
+    rating_set = canonical_ratings or list(cat["ratings"])
+    material_set = canonical_materials or list(cat["materials"])
+    ca_set = canonical_cas or list(cat["corrosion_allowances"])
+
+    # Apply numeric rating range.
+    rating_set = _apply_rating_range(
+        rating_set,
+        extracted["rating_min"], extracted["rating_min_inclusive"],
+        extracted["rating_max"], extracted["rating_max_inclusive"],
+    )
+
+    # Apply material exclusions (only useful when material isn't already
+    # explicitly listed; if the user said "DSS" they meant DSS).
+    if canonical_materials:
+        material_set = _apply_material_exclusions(
+            canonical_materials, extracted["exclude_nace"], extracted["exclude_low_temp"],
+        )
+    else:
+        material_set = _apply_material_exclusions(
+            material_set, extracted["exclude_nace"], extracted["exclude_low_temp"],
+        )
+
+    return {
+        "canonical_ratings": canonical_ratings,
+        "canonical_materials": canonical_materials,
+        "canonical_cas": canonical_cas,
+        "canonical_services": canonical_services,
+        "rating_set": rating_set,
+        "material_set": material_set,
+        "ca_set": ca_set,
+        "field_suggestions": rating_suggestions + material_suggestions + ca_suggestions,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Match enumeration
 # ---------------------------------------------------------------------------
 
 def _pt_preview(rating: str, material: str) -> str:
@@ -341,64 +478,54 @@ def _safe_resolve(rating: str, material: str, ca: str, service: Optional[str]) -
         return None
 
 
-def _build_match(rating: str, material: str, ca: str, service: Optional[str],
-                 score: float = 1.0) -> Optional[dict]:
-    resolved = _safe_resolve(rating, material, ca, service)
-    if not resolved:
-        return None
-    return {
-        "piping_class":        resolved["class_code"],
-        "rating":              rating,
-        "material":            material,
-        "corrosion_allowance": ca,
-        "pt_preview":          _pt_preview(rating, material),
-        "score":               score,
-    }
+def _enumerate(
+    rating_set: list[str],
+    material_set: list[str],
+    ca_set: list[str],
+    service: Optional[str],
+    max_cards: int = 60,
+) -> list[dict]:
+    """Cartesian product of rating × material × CA, resolved to class
+    codes. Combinations that don't fit §5.5 rules silently drop out.
 
-
-def _enumerate_matches(slots: dict, max_cards: int = 30) -> list[dict]:
-    """Build match cards by expanding any unfilled slot across the catalog.
-
-    - All 4 slots filled → exactly 1 card.
-    - One slot missing → expand that dimension across the catalog.
-    - Two slots missing → bounded cartesian product, capped at `max_cards`.
-    - Three+ slots missing → no match cards yet (the route still asks for
-      the next field).
-    """
-    cat = _catalog()
-    ratings = [slots["rating"]] if slots.get("rating") else cat["ratings"]
-    materials = [slots["material"]] if slots.get("material") else cat["materials"]
-    cas = [slots["corrosion_allowance"]] if slots.get("corrosion_allowance") else cat["corrosion_allowances"]
-    services = [slots["service"]] if slots.get("service") else [None]
-
-    filled_count = sum(1 for k in ("rating", "material", "corrosion_allowance", "service")
-                       if slots.get(k))
-    if filled_count < 2:
-        return []
-
+    Dedup is by (rating, class_code): the §5.5 rules sometimes resolve
+    two different material/CA pairs to the same class (e.g. CS + 6 mm
+    auto-promotes to NACE, so it becomes A2N — same as CS NACE + 6 mm).
+    Both are the same PMS Excel, so we keep the first occurrence per
+    rating + class_code pair."""
     out: list[dict] = []
-    for r in ratings:
-        for m in materials:
-            for ca in cas:
-                for s in services:
-                    card = _build_match(r, m, ca, s)
-                    if card:
-                        out.append(card)
-                    if len(out) >= max_cards:
-                        return out
+    seen_tuple: set[tuple[str, str, str]] = set()
+    seen_class: set[tuple[str, str]] = set()
+    for r in rating_set:
+        for m in material_set:
+            for ca in ca_set:
+                key = (r, m, ca)
+                if key in seen_tuple:
+                    continue
+                seen_tuple.add(key)
+                resolved = _safe_resolve(r, m, ca, service)
+                if resolved is None:
+                    continue
+                class_key = (r, resolved["class_code"])
+                if class_key in seen_class:
+                    continue
+                seen_class.add(class_key)
+                out.append({
+                    "piping_class":        resolved["class_code"],
+                    "rating":              r,
+                    "material":            m,
+                    "corrosion_allowance": ca,
+                    "pt_preview":          _pt_preview(r, m),
+                    "score":               1.0,
+                })
+                if len(out) >= max_cards:
+                    return out
     return out
 
 
 # ---------------------------------------------------------------------------
-# Reply text — used when Claude's reply is missing or generic
+# Reply text fallbacks (used when Claude returns a blank reply)
 # ---------------------------------------------------------------------------
-
-def _next_missing(slots: dict) -> Optional[str]:
-    for f in ("rating", "material", "corrosion_allowance", "service"):
-        if not slots.get(f):
-            return f
-    return None
-
 
 def _pretty(field: str) -> str:
     return {
@@ -409,7 +536,21 @@ def _pretty(field: str) -> str:
     }.get(field, field)
 
 
-def _default_reply(slots: dict, field_suggestions: list[dict], matches: list[dict]) -> str:
+def _next_missing_slot(canonical_ratings, canonical_materials, canonical_cas, canonical_services):
+    for f, vals in [
+        ("rating", canonical_ratings),
+        ("material", canonical_materials),
+        ("corrosion_allowance", canonical_cas),
+        ("service", canonical_services),
+    ]:
+        if not vals:
+            return f
+    return None
+
+
+def _default_reply(
+    matches: list[dict], field_suggestions: list[dict], any_filter: bool,
+) -> str:
     if field_suggestions:
         f = field_suggestions[0]
         if f["suggestions"]:
@@ -418,16 +559,17 @@ def _default_reply(slots: dict, field_suggestions: list[dict], matches: list[dic
                 f"{_pretty(f['field'])}. Did you mean one of these?"
             )
         return (
-            f"I don't recognise **{f['provided']}** for "
-            f"{_pretty(f['field'])}. Pick from the catalog."
+            f"I don't recognise **{f['provided']}** for {_pretty(f['field'])}. "
+            "Pick from the catalog."
         )
-    missing = _next_missing(slots)
-    if missing:
-        return f"Which **{_pretty(missing)}** would you like?"
+    if not any_filter:
+        return (
+            "Tell me what PMS you need — Rating, Material, Corrosion "
+            "Allowance, and Service all help me narrow down."
+        )
     if not matches:
         return (
-            f"I have all four fields but couldn't resolve a class for "
-            f"{slots['rating']} · {slots['material']} · CA {slots['corrosion_allowance']}. "
+            "No piping class in the catalogue matches those filters. "
             "Try a different combination."
         )
     if len(matches) == 1:
@@ -438,7 +580,7 @@ def _default_reply(slots: dict, field_suggestions: list[dict], matches: list[dic
             "Click Download Excel to grab the PMS."
         )
     return (
-        f"Here are **{len(matches)} matching classes** for what you described. "
+        f"Here are **{len(matches)} matching classes**. "
         "Pick one or select several and download as ZIP."
     )
 
@@ -448,104 +590,155 @@ def _default_reply(slots: dict, field_suggestions: list[dict], matches: list[dic
 # ---------------------------------------------------------------------------
 
 def chat(prompt: str, history: list[dict]) -> dict:
-    extraction = _extract_slots_with_claude(prompt, history)
+    extracted = _extract_filters_with_claude(prompt, history)
+    filters = _resolve_filter_sets(extracted)
 
-    # Merge slot state from prior assistant turns. The Claude prompt is
-    # already told to read the full history, so most of the time the
-    # extracted values themselves carry forward — but we still defensively
-    # merge with any explicit slots the route side might inject later.
+    # Did the user actually constrain anything (catalog OR numeric range
+    # OR exclusion flag)?
+    any_filter = bool(
+        filters["canonical_ratings"]
+        or filters["canonical_materials"]
+        or filters["canonical_cas"]
+        or filters["canonical_services"]
+        or extracted["rating_min"] is not None
+        or extracted["rating_max"] is not None
+        or extracted["exclude_nace"]
+        or extracted["exclude_low_temp"]
+    )
 
-    raw_slots = {
-        "rating":              extraction.get("rating"),
-        "material":            extraction.get("material"),
-        "corrosion_allowance": extraction.get("corrosion_allowance"),
-        "service":             extraction.get("service"),
-    }
+    service_str = ", ".join(filters["canonical_services"]) if filters["canonical_services"] else ""
 
-    canonical: dict[str, Optional[str]] = {}
-    field_suggestions: list[dict] = []
-    for field, value in raw_slots.items():
-        canonical_value, suggestion = _validate_slot(field, value)
-        canonical[field] = canonical_value
-        if suggestion:
-            field_suggestions.append(suggestion)
+    matched_classes = (
+        _enumerate(
+            filters["rating_set"],
+            filters["material_set"],
+            filters["ca_set"],
+            service_str or None,
+        )
+        if any_filter
+        else []
+    )
 
-    missing = [f for f in ("rating", "material", "corrosion_allowance", "service")
-               if not canonical[f]]
+    # Build the backward-compatible slots block.
+    rating = filters["canonical_ratings"][0] if filters["canonical_ratings"] else None
+    material = filters["canonical_materials"][0] if filters["canonical_materials"] else None
+    ca = filters["canonical_cas"][0] if filters["canonical_cas"] else None
+    service = service_str or None
+
+    # Build human-friendly slot display strings: when the user picked
+    # multiple values for a slot, show "(N) value1, value2..." so the
+    # progress pill carries the count.
+    def _multi_display(vals: list[str]) -> Optional[str]:
+        if not vals:
+            return None
+        if len(vals) == 1:
+            return vals[0]
+        head = ", ".join(vals[:2])
+        rest = len(vals) - 2
+        return f"{head}{f' (+{rest} more)' if rest > 0 else ''}"
+
+    rating_display = _multi_display(filters["canonical_ratings"])
+    material_display = _multi_display(filters["canonical_materials"])
+    ca_display = _multi_display(filters["canonical_cas"])
+
+    missing = [
+        f for f, v in [
+            ("rating", rating),
+            ("material", material),
+            ("corrosion_allowance", ca),
+            ("service", service),
+        ] if not v
+    ]
+
+    # "Complete" semantics: we have a result list (so the user is unblocked)
+    # OR every slot has at least one value.
+    complete = bool(matched_classes) or (rating and material and ca and service)
+
+    exclusions: list[str] = []
+    if extracted["exclude_nace"]:
+        exclusions.append("NACE")
+    if extracted["exclude_low_temp"]:
+        exclusions.append("LTCS")
 
     slots = {
-        "rating":              canonical["rating"],
-        "material":            canonical["material"],
-        "corrosion_allowance": canonical["corrosion_allowance"],
-        "service":             canonical["service"],
+        # legacy singular fields (frontend reads these)
+        "rating":              rating_display,
+        "material":            material_display,
+        "corrosion_allowance": ca_display,
+        "service":             service,
         "missing":             missing,
-        "complete":            len(missing) == 0,
+        "complete":            bool(complete),
+        # multi-value extensions
+        "ratings":              filters["canonical_ratings"],
+        "materials":            filters["canonical_materials"],
+        "corrosion_allowances": filters["canonical_cas"],
+        "services":             filters["canonical_services"],
+        "exclusions":           exclusions,
+        "rating_min":           extracted["rating_min"],
+        "rating_max":           extracted["rating_max"],
     }
 
-    matched_classes = _enumerate_matches(canonical)
+    cat = _catalog()
+    available_values: dict[str, list[str]] = {}
+    if not filters["canonical_ratings"]:
+        available_values["rating"] = cat["ratings"]
+    if not filters["canonical_materials"]:
+        available_values["material"] = cat["materials"]
+    if not filters["canonical_cas"]:
+        available_values["corrosion_allowance"] = cat["corrosion_allowances"]
+    if not filters["canonical_services"]:
+        available_values["service"] = cat["services"]
 
-    # ── Pick a suggested action ─────────────────────────────────────
-    if len(matched_classes) == 1 and slots["complete"]:
+    if len(matched_classes) == 1 and all((rating, material, ca, service)):
         m = matched_classes[0]
         suggested_action = {
-            "type":                 "open_generator",
-            "piping_class":         m["piping_class"],
-            "material":             m["material"],
+            "type": "open_generator",
+            "piping_class": m["piping_class"],
+            "material": m["material"],
             "corrosion_allowance": m["corrosion_allowance"],
-            "service":              canonical["service"],
-            "design_pressure_barg": extraction.get("design_pressure_barg"),
-            "design_temp_c":        extraction.get("design_temp_c"),
+            "service": service,
+            "design_pressure_barg": extracted["design_pressure_barg"],
+            "design_temp_c": extracted["design_temp_c"],
         }
     elif matched_classes:
         suggested_action = {
-            "type":                 "list_only",
-            "piping_class":         None,
-            "material":             None,
+            "type": "list_only",
+            "piping_class": None,
+            "material": None,
             "corrosion_allowance": None,
-            "service":              canonical["service"],
-            "design_pressure_barg": extraction.get("design_pressure_barg"),
-            "design_temp_c":        extraction.get("design_temp_c"),
+            "service": service,
+            "design_pressure_barg": extracted["design_pressure_barg"],
+            "design_temp_c": extracted["design_temp_c"],
         }
     else:
         suggested_action = {
-            "type":                 "none",
-            "piping_class":         None,
-            "material":             None,
+            "type": "none",
+            "piping_class": None,
+            "material": None,
             "corrosion_allowance": None,
-            "service":              canonical["service"],
-            "design_pressure_barg": extraction.get("design_pressure_barg"),
-            "design_temp_c":        extraction.get("design_temp_c"),
+            "service": service,
+            "design_pressure_barg": extracted["design_pressure_barg"],
+            "design_temp_c": extracted["design_temp_c"],
         }
 
-    available_values: dict[str, list[str]] = {}
-    cat = _catalog()
-    if not canonical["rating"]:
-        available_values["rating"] = cat["ratings"]
-    if not canonical["material"]:
-        available_values["material"] = cat["materials"]
-    if not canonical["corrosion_allowance"]:
-        available_values["corrosion_allowance"] = cat["corrosion_allowances"]
-    if not canonical["service"]:
-        available_values["service"] = cat["services"]
-
-    reply = extraction.get("reply") or _default_reply(slots, field_suggestions, matched_classes)
+    reply = extracted["reply"] or _default_reply(matched_classes, filters["field_suggestions"], any_filter)
 
     return {
-        "reply":               reply,
+        "reply": reply,
         "interpreted": {
             "piping_class":         None,
-            "rating":               canonical["rating"],
-            "material":             canonical["material"],
-            "corrosion_allowance": canonical["corrosion_allowance"],
-            "service":              canonical["service"],
-            "design_temp_c":        extraction.get("design_temp_c"),
-            "design_pressure_barg": extraction.get("design_pressure_barg"),
-            "intent":               extraction.get("intent", "unknown"),
+            "rating":               rating,
+            "material":             material,
+            "corrosion_allowance": ca,
+            "service":              service,
+            "design_temp_c":        extracted["design_temp_c"],
+            "design_pressure_barg": extracted["design_pressure_barg"],
+            "intent":               extracted["intent"],
         },
         "matched_classes":     matched_classes,
         "suggested_action":    suggested_action,
         "slots":               slots,
-        "field_suggestions":   field_suggestions,
+        "field_suggestions":   filters["field_suggestions"],
         "available_values":    available_values,
         "allow_bulk_download": len(matched_classes) > 1,
     }
@@ -556,12 +749,8 @@ def chat(prompt: str, history: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 def default_design_conditions(rating: str, material: str) -> dict:
-    """Pick sensible default design P/T for chat-driven downloads.
-
-    Strategy: take the cold-point pressure (most demanding) and 50 °C as
-    a generic default temperature. MDMT defaults to -29 °C and joint type
-    to Seamless. Engineers can re-run the configurator with their own
-    values if they need something specific."""
+    """Sensible defaults for chat-driven downloads: cold-point pressure,
+    50 °C design T, MDMT -29 °C, Seamless joint."""
     pt = pt_lookup.find(rating, material)
     if not pt or pt.get("pending"):
         return {
