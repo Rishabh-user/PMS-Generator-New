@@ -16,6 +16,8 @@ from app.routes.options_routes import router as options_router
 from app.routes.resolve_routes import router as resolve_router
 from app.routes.ai_routes import router as ai_router
 from app.routes.export_routes import router as export_router
+from app.routes.pms_agent_routes import router as pms_agent_router
+from app.services import session_store
 
 
 logging.basicConfig(
@@ -43,6 +45,13 @@ app.include_router(options_router)
 app.include_router(resolve_router)
 app.include_router(ai_router)
 app.include_router(export_router)
+app.include_router(pms_agent_router)
+
+
+@app.on_event("startup")
+def _init_session_store() -> None:
+    """Create the PMS-Agent SQLite table the first time the server boots."""
+    session_store.init()
 
 
 @app.get("/", response_class=HTMLResponse)
