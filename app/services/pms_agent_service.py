@@ -192,8 +192,24 @@ Services (sample — pass through free text if not exact):
      "NACE compliance"                  → ["CS NACE", "LTCS NACE", "SS316L NACE", "DSS NACE", "SDSS NACE"]
    When the user asks for a specific material WITH "NACE", canonicalise
    to that specific NACE variant (e.g. "DSS with NACE" → ["DSS NACE"]).
-9. Numbers are JSON numbers, not strings. Booleans default to false.
-10. Output JSON ONLY. No code fences, no commentary.
+9. DESIGN PRESSURE / TEMPERATURE ARE NOT THE RATING:
+   `design_pressure_barg` and `design_temp_c` are operating-point inputs
+   (what the line must sustain). The flange `rating` is a fixed spec
+   (150# / 300# / 600# / …). DO NOT infer or fill `ratings`,
+   `rating_min`, or `rating_max` from a design pressure / temperature.
+   Examples:
+     "generate pms for 532 barg at 400°C"
+        → design_pressure_barg=532, design_temp_c=400,
+          ratings=[], rating_min=null, rating_max=null
+          (the backend will search the catalog for classes that can sustain it)
+     "200 barg at 250°C"
+        → design_pressure_barg=200, design_temp_c=250, ratings=[]
+   Only populate `ratings` when the user names a rating directly
+   ("150#", "class 300", "class 600 flange"). Phrases like
+   "operating pressure 200 barg" / "design at X barg" / "needs to hold X
+   bar at Y°C" all belong in design_pressure_barg, never in ratings.
+10. Numbers are JSON numbers, not strings. Booleans default to false.
+11. Output JSON ONLY. No code fences, no commentary.
 """
 
 
@@ -478,15 +494,96 @@ def _safe_resolve(rating: str, material: str, ca: str, service: Optional[str]) -
         return None
 
 
+def _rated_pressure_at_temp(pt: Optional[dict], design_t_c: float) -> Optional[float]:
+    """Linear-interpolated flange rating (barg) at the requested design
+    temperature. Returns None when no P-T table is indexed for this
+    material, when the table has no entries, or when `design_t_c` is
+    ABOVE the table's highest indexed point (clamping high would be a
+    false ADEQUATE — better to flag it as out-of-envelope)."""
+    if not pt or pt.get("pending"):
+        return None
+    temps = pt.get("temperatures_c") or []
+    pressures = pt.get("pressures_barg") or []
+    if not temps or not pressures or len(temps) != len(pressures):
+        return None
+    # Below the indexed minimum → clamp to the cold-end rating (max P).
+    if design_t_c <= temps[0]:
+        return float(pressures[0])
+    # Above the indexed maximum → out of envelope. Do NOT clamp high.
+    if design_t_c > temps[-1]:
+        return None
+    for i in range(len(temps) - 1):
+        t1, t2 = temps[i], temps[i + 1]
+        if t1 <= design_t_c <= t2:
+            p1, p2 = pressures[i], pressures[i + 1]
+            frac = (design_t_c - t1) / (t2 - t1)
+            return float(p1 + (p2 - p1) * frac)
+    return float(pressures[-1])
+
+
+# Same tolerance the page-side adequacy banner uses (0.05 barg ≈ 0.7 psig,
+# within ASME B16.5 P-T table rounding noise).
+_ADEQUACY_TOLERANCE_BARG = 0.05
+
+
+def _is_adequate(
+    rating: str, material: str,
+    design_p_barg: Optional[float], design_t_c: Optional[float],
+) -> tuple[bool, Optional[str]]:
+    """Returns (adequate, reason_if_not). When design conditions are
+    incomplete (e.g. P given but no T) we conservatively assume the user
+    means design_t_c = hottest indexed point — i.e. the most demanding
+    operating point on the curve."""
+    if design_p_barg is None:
+        return True, None  # No constraint to check.
+
+    pt = pt_lookup.find(rating, material)
+    if not pt or pt.get("pending"):
+        # No ASME B16.5 P-T curve for this material (e.g. GRE / CPVC /
+        # composite). When the user gave design conditions, we can't
+        # verify the class meets them — reject rather than mislead.
+        return False, "no ASME B16.5 P-T curve indexed for this material"
+
+    t_c = design_t_c
+    if t_c is None:
+        hp = pt.get("hottest_point") or {}
+        t_c = hp.get("temperature_c")
+    if t_c is None:
+        # Design P given but the catalog has no temperature axis to
+        # check against — also reject.
+        return False, "no P-T temperature axis to verify against"
+
+    rated = _rated_pressure_at_temp(pt, t_c)
+    if rated is None:
+        # design T above the indexed envelope.
+        return False, (
+            f"design T {t_c}°C is above the indexed P-T envelope "
+            f"(max {max(pt.get('temperatures_c') or [None])}°C)"
+        )
+    if rated + _ADEQUACY_TOLERANCE_BARG < design_p_barg:
+        return False, (
+            f"rated {rated:.1f} barg at {t_c}°C < design {design_p_barg:.1f} barg"
+        )
+    return True, None
+
+
 def _enumerate(
     rating_set: list[str],
     material_set: list[str],
     ca_set: list[str],
     service: Optional[str],
+    design_p_barg: Optional[float] = None,
+    design_t_c: Optional[float] = None,
     max_cards: int = 60,
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     """Cartesian product of rating × material × CA, resolved to class
     codes. Combinations that don't fit §5.5 rules silently drop out.
+
+    When `design_p_barg` is provided, every candidate is filtered through
+    the P-T adequacy check — only classes that can sustain the design
+    point survive. The second element of the returned tuple is the count
+    of candidates rejected by the adequacy filter so the caller can
+    explain "no match" to the user.
 
     Dedup is by (rating, class_code): the §5.5 rules sometimes resolve
     two different material/CA pairs to the same class (e.g. CS + 6 mm
@@ -496,6 +593,7 @@ def _enumerate(
     out: list[dict] = []
     seen_tuple: set[tuple[str, str, str]] = set()
     seen_class: set[tuple[str, str]] = set()
+    inadequate_count = 0
     for r in rating_set:
         for m in material_set:
             for ca in ca_set:
@@ -510,6 +608,13 @@ def _enumerate(
                 if class_key in seen_class:
                     continue
                 seen_class.add(class_key)
+
+                if design_p_barg is not None:
+                    ok, _why = _is_adequate(r, m, design_p_barg, design_t_c)
+                    if not ok:
+                        inadequate_count += 1
+                        continue
+
                 out.append({
                     "piping_class":        resolved["class_code"],
                     "rating":              r,
@@ -519,8 +624,8 @@ def _enumerate(
                     "score":               1.0,
                 })
                 if len(out) >= max_cards:
-                    return out
-    return out
+                    return out, inadequate_count
+    return out, inadequate_count
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +654,12 @@ def _next_missing_slot(canonical_ratings, canonical_materials, canonical_cas, ca
 
 
 def _default_reply(
-    matches: list[dict], field_suggestions: list[dict], any_filter: bool,
+    matches: list[dict],
+    field_suggestions: list[dict],
+    any_filter: bool,
+    inadequate_count: int = 0,
+    design_p_barg: Optional[float] = None,
+    design_t_c: Optional[float] = None,
 ) -> str:
     if field_suggestions:
         f = field_suggestions[0]
@@ -568,6 +678,23 @@ def _default_reply(
             "Allowance, and Service all help me narrow down."
         )
     if not matches:
+        # No matches AND the user gave design conditions → explain why.
+        if design_p_barg is not None and inadequate_count > 0:
+            dt = f"{design_t_c:g}°C" if design_t_c is not None else "the requested design T"
+            return (
+                f"⚠️ **No class in the catalogue can sustain "
+                f"{design_p_barg:g} barg at {dt}.** "
+                f"All {inadequate_count} candidate classes fall short of that "
+                "design point on their ASME B16.5 P-T curve. Lower the design "
+                "pressure or temperature, or check whether a non-flange "
+                "solution (e.g. compact flange / hub connector) is required."
+            )
+        if design_t_c is not None and design_p_barg is None:
+            return (
+                f"No class in the catalogue is indexed for design T = "
+                f"{design_t_c:g}°C with the other filters provided. "
+                "Try lowering the temperature or relaxing the filters."
+            )
         return (
             "No piping class in the catalogue matches those filters. "
             "Try a different combination."
@@ -594,7 +721,9 @@ def chat(prompt: str, history: list[dict]) -> dict:
     filters = _resolve_filter_sets(extracted)
 
     # Did the user actually constrain anything (catalog OR numeric range
-    # OR exclusion flag)?
+    # OR exclusion flag OR design conditions)? Design pressure on its own
+    # is enough to trigger enumeration — the user wants us to find a
+    # class that can sustain it.
     any_filter = bool(
         filters["canonical_ratings"]
         or filters["canonical_materials"]
@@ -604,20 +733,24 @@ def chat(prompt: str, history: list[dict]) -> dict:
         or extracted["rating_max"] is not None
         or extracted["exclude_nace"]
         or extracted["exclude_low_temp"]
+        or extracted["design_pressure_barg"] is not None
+        or extracted["design_temp_c"] is not None
     )
 
     service_str = ", ".join(filters["canonical_services"]) if filters["canonical_services"] else ""
 
-    matched_classes = (
-        _enumerate(
+    inadequate_count = 0
+    if any_filter:
+        matched_classes, inadequate_count = _enumerate(
             filters["rating_set"],
             filters["material_set"],
             filters["ca_set"],
             service_str or None,
+            design_p_barg=extracted["design_pressure_barg"],
+            design_t_c=extracted["design_temp_c"],
         )
-        if any_filter
-        else []
-    )
+    else:
+        matched_classes = []
 
     # Build the backward-compatible slots block.
     rating = filters["canonical_ratings"][0] if filters["canonical_ratings"] else None
@@ -721,7 +854,29 @@ def chat(prompt: str, history: list[dict]) -> dict:
             "design_temp_c": extracted["design_temp_c"],
         }
 
-    reply = extracted["reply"] or _default_reply(matched_classes, filters["field_suggestions"], any_filter)
+    # When the design-condition adequacy filter wiped out all candidates,
+    # we override Claude's reply with a precise explanation — Claude has
+    # no visibility into the catalog's P-T envelope and would otherwise
+    # tell the user "here you go" alongside zero match cards.
+    no_match_due_to_design = (
+        not matched_classes
+        and inadequate_count > 0
+        and extracted["design_pressure_barg"] is not None
+    )
+    if no_match_due_to_design:
+        reply = _default_reply(
+            matched_classes, filters["field_suggestions"], any_filter,
+            inadequate_count=inadequate_count,
+            design_p_barg=extracted["design_pressure_barg"],
+            design_t_c=extracted["design_temp_c"],
+        )
+    else:
+        reply = extracted["reply"] or _default_reply(
+            matched_classes, filters["field_suggestions"], any_filter,
+            inadequate_count=inadequate_count,
+            design_p_barg=extracted["design_pressure_barg"],
+            design_t_c=extracted["design_temp_c"],
+        )
 
     return {
         "reply": reply,
