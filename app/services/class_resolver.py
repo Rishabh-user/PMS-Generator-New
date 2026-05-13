@@ -153,9 +153,36 @@ def _tubing_variant(rating: str) -> str:
     return m.group(1).upper() if m else ""
 
 
-def derive_class_code(rating: str, material: str, ca: str) -> dict:
+_GRE_MATERIAL_RE      = re.compile(r"(?i)\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced")
+_GRE_HYPOCHLORITE_RE  = re.compile(r"(?i)Hypochlorite|BONSTRAND")
+_GRE_SPECIAL_RE       = re.compile(r"(?i)\bSpecial\b")
+
+
+def _service_digit_override(material: str, service: Optional[str]) -> Optional[str]:
+    """Project rule: GRE classes split by service.
+        Raw Sea Water / Topside Seawater (default)  → digit 50 (class A50)
+        Hypochlorite  / BONSTRAND-bound services    → digit 51 (class A51)
+        "Special Services" / similar wording        → digit 52 (class A52)
+
+    Other materials don't have service-dependent digits — return None and
+    let derive_digit() use the catalog default."""
+    if not material or not _GRE_MATERIAL_RE.search(material):
+        return None
+    s = service or ""
+    if _GRE_HYPOCHLORITE_RE.search(s):
+        return "51"
+    if _GRE_SPECIAL_RE.search(s):
+        return "52"
+    return None  # default to the catalog rule → 50
+
+
+def derive_class_code(rating: str, material: str, ca: str,
+                      service: Optional[str] = None) -> dict:
     letter   = derive_letter(rating)
-    digit    = derive_digit(material, ca)
+    base_digit = derive_digit(material, ca)
+    # Service-aware overrides — currently only used for GRE A50/A51/A52.
+    override = _service_digit_override(material, service)
+    digit = override or base_digit
     suffix   = derive_suffix(material, ca)
     trailing = _tubing_variant(rating)
     return {
@@ -179,7 +206,7 @@ def resolve(rating: str, material: str, ca: str, service: Optional[str] = None) 
     Raises ResolutionError when the inputs don't fit the §5.5 rules
     (unknown rating, or unknown material/CA pair — extend
     `class_naming.json` to fix)."""
-    parts = derive_class_code(rating, material, ca)
+    parts = derive_class_code(rating, material, ca, service)
     pt    = pt_lookup.find(rating, material)
     code_factors = _build_code_factors(material, pt, rating, parts["class_code"], service)
 

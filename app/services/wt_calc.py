@@ -395,6 +395,12 @@ def summary_stats(rows: list[dict], pt: Optional[dict], design_pressure_barg: Op
         "min_margin_pct":    min(margins) if margins else None,
         "hydrotest_barg":    hydro,
         "total_nps_sizes":   len(rows),
+        # Project-policy constants — surfaced here so the frontend
+        # never has to hardcode them. ASME B36.10M seamless mill
+        # tolerance and B31.3 §345 hydrotest factor.
+        "mill_tolerance":     MILL_TOLERANCE,
+        "hydrotest_factor":   HYDROTEST_FACTOR,
+        "operating_factor":   OPERATING_FACTOR,
     }
 
 
@@ -584,6 +590,123 @@ def adequacy(pt: Optional[dict], design_pressure_barg: Optional[float], design_t
         "design_temp_c":                   design_temp_c,
         # Same 0.05 barg tolerance the SPA banner uses.
         "adequate": rated + 0.05 >= design_pressure_barg,
+    }
+
+
+def build_formula_example(
+    *,
+    resolved: dict,
+    material: str,
+    ca: str,
+    design_pressure_barg: Optional[float],
+    design_temp_c: Optional[float],
+    joint_type: Optional[str],
+    service: Optional[str] = None,
+) -> Optional[dict]:
+    """Worked example for the B31.3 §304.1.2 Eq. 3a formula card on
+    Tab 2. Picks NPS 6 (project convention) or the largest available
+    NPS as a fallback. Returns None when the calc can't be performed
+    (no stress table for the material, etc.) — the frontend then
+    renders a "worked example unavailable" message.
+
+    Mirrors the renderFormulaCard() routine in the legacy TS client
+    so the same numbers appear in the new compute endpoint."""
+    nps_doc = load_nps_dimensions(material, service)
+    nps_rows = nps_doc.get("rows") or []
+    if not nps_rows:
+        return None
+
+    PREFERRED = [6.0, 4.0, 3.0, 2.0]
+    example = None
+    for n in PREFERRED:
+        example = next((r for r in nps_rows if float(r.get("nps_decimal", -1)) == n), None)
+        if example:
+            break
+    if example is None:
+        example = max(nps_rows, key=lambda r: float(r.get("nps_decimal", -1)))
+
+    D_mm = float(example["od_mm"])
+    D_in = D_mm / 25.4
+
+    cf = resolved.get("code_factors") or {}
+    stress_table = cf.get("stress_table")
+    y_curve = cf.get("y_curve")
+    pt = resolved.get("pressure_temperature") or {}
+
+    cold_pbarg = (pt.get("cold_point") or {}).get("pressure_barg")
+    cold_tc = (pt.get("temperatures_c") or [None])[0]
+    cold_label = (pt.get("temp_labels") or [None])[0] or (str(int(cold_tc)) if cold_tc is not None else "—")
+
+    P1_psi = barg_to_psig(cold_pbarg)
+    P2_psi = barg_to_psig(design_pressure_barg) if design_pressure_barg is not None else None
+    s_cold = lookup_stress(stress_table, cold_tc) if (stress_table and cold_tc is not None) else None
+    s_hot  = lookup_stress(stress_table, design_temp_c) if (stress_table and design_temp_c is not None) else None
+    S1 = s_cold["stress_psi"] if s_cold else None
+    S2 = s_hot["stress_psi"]  if s_hot  else None
+
+    E = joint_efficiency_from_label(joint_type)
+    y_at = lookup_y(y_curve, design_temp_c) if design_temp_c is not None else None
+    Y = y_at["y"] if y_at else 0.4
+    Y_label = (y_curve or {}).get("label", "unknown")
+    W = 1.0 if (design_temp_c is not None and design_temp_c <= 510) else None
+
+    C_mm = parse_corrosion_mm(ca)
+    C_in = C_mm / 25.4
+    mill_tol = MILL_TOLERANCE
+
+    # Eq. 3a per case in inches: t = P·D / [2·(S·E·W + P·Y)]
+    t1_in = None
+    if P1_psi is not None and S1 is not None and W is not None:
+        t1_in = (P1_psi * D_in) / (2 * (S1 * E * W + P1_psi * Y))
+    t2_in = None
+    if P2_psi is not None and S2 is not None and W is not None:
+        t2_in = (P2_psi * D_in) / (2 * (S2 * E * W + P2_psi * Y))
+
+    candidates = [v for v in (t1_in, t2_in) if v is not None]
+    if not candidates:
+        return {
+            "available": False,
+            "nps":        str(example["nps"]),
+            "od_in":      D_in,
+            "od_mm":      D_mm,
+            "E": E, "W": W, "Y": Y, "Y_label": Y_label,
+            "C_mm": C_mm, "C_in": C_in,
+            "mill_tolerance": mill_tol,
+            "reason": "Allowable stress unavailable for this material.",
+        }
+    case1_governs = (t1_in is not None) and (t2_in is None or t1_in >= t2_in)
+    t_press_in = t1_in if case1_governs else t2_in
+    tm_in = t_press_in + C_in
+    T_in = tm_in / (1 - mill_tol)
+    T_mm = T_in * 25.4
+
+    return {
+        "available": True,
+        "nps":        str(example["nps"]),
+        "od_in":      D_in,
+        "od_mm":      D_mm,
+        "E": E, "W": W, "Y": Y, "Y_label": Y_label,
+        "C_mm": C_mm, "C_in": C_in,
+        "mill_tolerance": mill_tol,
+        "case_1": {
+            "label":      f"Min T / Max P @ {cold_label}",
+            "P_psig":     P1_psi,
+            "S_psi":      S1,
+            "t_press_in": t1_in,
+            "governs":    case1_governs,
+        },
+        "case_2": {
+            "label":      f"Design Point @ {design_temp_c}°C" if design_temp_c is not None else "Design Point",
+            "P_psig":     P2_psi,
+            "S_psi":      S2,
+            "t_press_in": t2_in,
+            "governs":    not case1_governs and t2_in is not None,
+        },
+        "governing_case":   1 if case1_governs else 2,
+        "t_press_in":       t_press_in,
+        "tm_in":            tm_in,
+        "T_req_in":         T_in,
+        "T_req_mm":         T_mm,
     }
 
 

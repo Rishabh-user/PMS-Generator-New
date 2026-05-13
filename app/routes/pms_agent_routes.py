@@ -34,9 +34,9 @@ from app.services import (
     class_resolver,
     excel_exporter,
     pms_agent_service,
+    pms_snapshot,
     saved_pms_store,
     session_store,
-    wt_calc,
 )
 from app.services.session_store import SessionStoreUnavailableError
 
@@ -288,24 +288,25 @@ def save_pms(
             },
         )
 
-    # Resolve the class server-side so we can persist the full PMS
-    # payload alongside the user-picked design conditions. The payload
-    # contains everything needed to re-render the report without a
-    # follow-up /resolve-class round-trip.
+    # Build the full canonical snapshot via the same function the live
+    # /api/compute-pms endpoint uses — saved rows and live previews are
+    # guaranteed identical for the same inputs because there's only one
+    # implementation.
     try:
-        resolved = class_resolver.resolve(
+        payload = pms_snapshot.build_pms_snapshot(
             rating=req.rating,
             material=req.material,
-            ca=req.corrosion_allowance,
+            corrosion_allowance=req.corrosion_allowance,
             service=req.service or "",
+            design_pressure_barg=req.design_pressure_barg,
+            design_temp_c=req.design_temp_c,
+            mdmt_c=req.mdmt_c,
+            joint_type=req.joint_type,
         )
     except class_resolver.ResolutionError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
 
-    # Sanity-check: the class code Claude / the frontend believed
-    # should match what the resolver derives. If they disagree we still
-    # save (the resolver is authoritative) but log the discrepancy.
-    derived_class = resolved.get("class_code")
+    derived_class = payload.get("class_code")
     if derived_class and derived_class != req.piping_class:
         logger.warning(
             "Client-claimed class %s != resolver-derived %s for "
@@ -313,80 +314,6 @@ def save_pms(
             req.piping_class, derived_class, req.rating, req.material,
             req.corrosion_allowance, req.service,
         )
-
-    # Compute the FULL derived snapshot so the saved payload contains
-    # every value the SPA would render — WT table per NPS, summary
-    # stats, engineering flags, Materials-tab bore sections, adequacy
-    # banner, derived design conditions (hydrotest, operating, °F).
-    # If a future render shape changes, the saved row stays frozen at
-    # the moment it was saved (which is the whole point — engineering
-    # sign-off / audit).
-    try:
-        wt_rows = wt_calc.compute_wall_thickness_rows(
-            resolved=resolved,
-            material=req.material,
-            ca=req.corrosion_allowance,
-            design_pressure_barg=req.design_pressure_barg,
-            design_temp_c=req.design_temp_c,
-            joint_type=req.joint_type,
-            service=req.service or "",
-        )
-        wt_summary = wt_calc.summary_stats(
-            wt_rows, resolved.get("pressure_temperature"),
-            req.design_pressure_barg,
-        )
-        flags = wt_calc.evaluate_flags(
-            resolved=resolved,
-            material=req.material,
-            design_temp_c=req.design_temp_c,
-            mdmt_c=req.mdmt_c,
-        )
-        materials_tab = wt_calc.build_materials_snapshot(resolved, wt_rows)
-        adequacy_check = wt_calc.adequacy(
-            resolved.get("pressure_temperature"),
-            req.design_pressure_barg, req.design_temp_c,
-        )
-        derived_conditions = wt_calc.derived_design_conditions(
-            pt=resolved.get("pressure_temperature"),
-            design_pressure_barg=req.design_pressure_barg,
-            design_temp_c=req.design_temp_c,
-            mdmt_c=req.mdmt_c,
-        )
-    except Exception as e:  # noqa: BLE001
-        # Snapshot is best-effort: if any port-layer bug fires we still
-        # want the save to succeed with the catalog payload. The admin
-        # can rebuild snapshots later.
-        logger.exception("WT snapshot failed for class %s: %s", derived_class, e)
-        wt_rows = []
-        wt_summary = {}
-        flags = []
-        materials_tab = None
-        adequacy_check = None
-        derived_conditions = {}
-
-    payload = {
-        **resolved,
-        # User-picked design conditions snapshot.
-        "design_conditions": {
-            "design_pressure_barg": req.design_pressure_barg,
-            "design_temp_c":        req.design_temp_c,
-            "mdmt_c":               req.mdmt_c,
-            "joint_type":           req.joint_type,
-        },
-        # Tab 1 — adequacy + derived design conditions.
-        "adequacy":          adequacy_check,
-        "derived_conditions": derived_conditions,
-        # Tab 2 — full per-NPS WT table + summary + engineering flags.
-        "wall_thickness": {
-            "rows":    wt_rows,
-            "summary": wt_summary,
-            "flags":   flags,
-        },
-        # Tab 3 — Pipe & Fittings Material Assignment.
-        # Branch chart already lives in code_factors.branch_chart inside
-        # `resolved`; this just covers the two bore-section tables.
-        "materials_tab": materials_tab,
-    }
 
     try:
         result = saved_pms_store.upsert(

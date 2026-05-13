@@ -18,6 +18,7 @@ from app.routes.ai_routes import router as ai_router
 from app.routes.export_routes import router as export_router
 from app.routes.pms_agent_routes import router as pms_agent_router
 from app.routes.admin_routes import router as admin_router
+from app.routes.compute_routes import router as compute_router
 from app.services import agent_query_log_store, saved_pms_store, session_store
 
 
@@ -48,6 +49,7 @@ app.include_router(ai_router)
 app.include_router(export_router)
 app.include_router(pms_agent_router)
 app.include_router(admin_router)
+app.include_router(compute_router)
 
 
 @app.on_event("startup")
