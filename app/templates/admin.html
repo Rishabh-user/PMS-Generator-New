@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin · PMS Database</title>
+    <link rel="icon" type="image/png" href="/static/images/logo.png">
+    <link rel="stylesheet" href="/static/css/styles.css?v=29">
+    <link rel="stylesheet" href="/static/css/admin.css?v=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="top-nav">
+        <div class="nav-left">
+            <div class="logo">
+                <img src="/static/images/logo.png" alt="Logo" class="logo-img" onerror="this.style.display='none'">
+                <div class="logo-divider"></div>
+                <div>
+                    <div class="logo-text">PMS Generator</div>
+                    <div class="logo-subtitle">Admin · Database Browser</div>
+                </div>
+            </div>
+        </div>
+        <div class="nav-center">
+            <a href="/" class="admin-back-link">&larr; Back to generator</a>
+        </div>
+        <div class="nav-right">
+            <div class="api-badge" id="apiBadge"><span class="dot"></span> DB</div>
+        </div>
+    </header>
+
+    <div class="admin-shell">
+        <!-- ============================================================
+             LEFT RAIL — Tables list
+             ============================================================ -->
+        <aside class="admin-rail">
+            <div class="admin-rail-header">
+                <span class="admin-rail-title">Tables</span>
+                <span class="admin-rail-count" id="tablesCount">—</span>
+            </div>
+            <div class="admin-rail-toolbar">
+                <button type="button" class="admin-btn admin-btn-ghost" id="reloadTablesBtn" title="Refresh table list">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+                    Refresh
+                </button>
+            </div>
+            <ul class="admin-rail-list" id="tablesList">
+                <li class="admin-rail-empty">Loading tables…</li>
+            </ul>
+            <div class="admin-rail-error" id="tablesError" hidden></div>
+        </aside>
+
+        <!-- ============================================================
+             MAIN — Selected table
+             ============================================================ -->
+        <main class="admin-main">
+            <!-- Empty state until a table is selected -->
+            <div class="admin-empty" id="adminEmpty">
+                <div class="admin-empty-icon">
+                    <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                        <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                        <path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/>
+                        <path d="M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6"/>
+                    </svg>
+                </div>
+                <h2>Pick a table</h2>
+                <p>Select a table from the left rail to browse its rows.</p>
+            </div>
+
+            <!-- Table viewer -->
+            <section class="admin-viewer" id="adminViewer" hidden>
+                <div class="admin-viewer-header">
+                    <div class="admin-viewer-meta">
+                        <div>
+                            <div class="admin-meta-label">Table</div>
+                            <div class="admin-meta-value mono" id="metaTableName">—</div>
+                        </div>
+                        <div>
+                            <div class="admin-meta-label">Rows</div>
+                            <div class="admin-meta-value" id="metaRowCount">—</div>
+                        </div>
+                        <div>
+                            <div class="admin-meta-label">Columns</div>
+                            <div class="admin-meta-value" id="metaColumnCount">—</div>
+                        </div>
+                    </div>
+                    <div class="admin-viewer-tools">
+                        <div class="admin-search">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                            <input type="search" id="filterInput" placeholder="Filter this page…">
+                        </div>
+                        <button type="button" class="admin-btn admin-btn-outline" id="exportBtn">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            Export JSON
+                        </button>
+                        <button type="button" class="admin-btn admin-btn-outline" id="rawToggleBtn">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                            Raw JSON
+                        </button>
+                        <div class="admin-pager">
+                            <button type="button" class="admin-pager-btn" id="prevPageBtn" title="Previous page">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="15 18 9 12 15 6"/></svg>
+                            </button>
+                            <span class="admin-pager-label" id="pagerLabel">Page 1 / 1</span>
+                            <button type="button" class="admin-pager-btn" id="nextPageBtn" title="Next page">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="9 18 15 12 9 6"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="admin-viewer-body">
+                    <div class="admin-loading" id="rowsLoading" hidden>
+                        <div class="admin-spinner"></div>
+                        Loading rows…
+                    </div>
+                    <div class="admin-error" id="rowsError" hidden></div>
+                    <div class="admin-empty-rows" id="rowsEmpty" hidden>No rows in this table.</div>
+                    <pre class="admin-raw" id="rowsRaw" hidden></pre>
+                    <div class="admin-table-wrap" id="rowsTableWrap" hidden>
+                        <table class="admin-table" id="rowsTable">
+                            <thead><tr id="rowsTableHead"></tr></thead>
+                            <tbody id="rowsTableBody"></tbody>
+                        </table>
+                    </div>
+                    <div class="admin-filter-note" id="filterNote" hidden></div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div class="admin-toast-container" id="adminToastContainer"></div>
+
+    <script src="/static/js/admin.js?v=1"></script>
+</body>
+</html>

@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
     anthropic_max_tokens: int = 2000
 
+    # PMS-Agent chat session persistence. When set, the SQL store uses
+    # this Postgres URL. When empty the session endpoints return 503 and
+    # the chat operates without history (frontend shows "history sync
+    # off"). Format: postgresql://user:password@host[:port]/dbname
+    database_url: str = ""
+
     base_dir: Path = BASE_DIR
     data_dir: Path = BASE_DIR / "data"
     static_dir: Path = BASE_DIR / "static"

@@ -215,16 +215,25 @@ Services (sample — pass through free text if not exact):
 
 def _extract_filters_with_claude(prompt: str, history: list[dict]) -> dict:
     """Call Claude to extract structured filters. Falls back to a stub
-    when the key isn't configured or the call fails."""
+    when the key isn't configured or the call fails.
+
+    The returned dict carries an extra `_meta` key with Claude token
+    usage + per-call latency so the route can log them to
+    `pms_agent_queries` for cost / perf monitoring. The route strips
+    `_meta` before returning to the SPA."""
     if not ai_service.is_available():
-        return _empty_extraction(
+        empty = _empty_extraction(
             "AI is not configured on this server. Ask the operator to set "
             "ANTHROPIC_API_KEY in the backend .env."
         )
+        empty["_meta"] = {"model": None, "tokens_in": None, "tokens_out": None, "claude_ms": 0}
+        return empty
 
     client = ai_service._client_or_none()  # noqa: SLF001
     if client is None:
-        return _empty_extraction("AI client unavailable; check ANTHROPIC_API_KEY.")
+        empty = _empty_extraction("AI client unavailable; check ANTHROPIC_API_KEY.")
+        empty["_meta"] = {"model": None, "tokens_in": None, "tokens_out": None, "claude_ms": 0}
+        return empty
 
     messages: list[dict] = []
     for turn in (history or []):
@@ -234,6 +243,8 @@ def _extract_filters_with_claude(prompt: str, history: list[dict]) -> dict:
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": prompt})
 
+    import time as _time
+    t0 = _time.perf_counter()
     try:
         response = client.messages.create(
             model=settings.anthropic_model,
@@ -247,10 +258,25 @@ def _extract_filters_with_claude(prompt: str, history: list[dict]) -> dict:
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("Claude slot-extraction failed")
-        return _empty_extraction(f"AI request failed: {type(e).__name__}")
+        empty = _empty_extraction(f"AI request failed: {type(e).__name__}")
+        empty["_meta"] = {
+            "model": settings.anthropic_model,
+            "tokens_in": None,
+            "tokens_out": None,
+            "claude_ms": int((_time.perf_counter() - t0) * 1000),
+        }
+        return empty
 
     raw = response.content[0].text if response.content else ""
-    return _parse_extraction(raw)
+    parsed = _parse_extraction(raw)
+    usage = getattr(response, "usage", None)
+    parsed["_meta"] = {
+        "model": getattr(response, "model", settings.anthropic_model),
+        "tokens_in":  getattr(usage, "input_tokens", None) if usage else None,
+        "tokens_out": getattr(usage, "output_tokens", None) if usage else None,
+        "claude_ms": int((_time.perf_counter() - t0) * 1000),
+    }
+    return parsed
 
 
 def _empty_extraction(reply: str) -> dict:
@@ -896,6 +922,10 @@ def chat(prompt: str, history: list[dict]) -> dict:
         "field_suggestions":   filters["field_suggestions"],
         "available_values":    available_values,
         "allow_bulk_download": len(matched_classes) > 1,
+        # Internal-only — token usage + latency from the Claude call.
+        # The route reads this for the pms_agent_queries log and strips
+        # it from the response sent to the SPA.
+        "_meta": extracted.get("_meta") or {},
     }
 
 

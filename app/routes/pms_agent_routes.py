@@ -30,11 +30,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.services import (
+    agent_query_log_store,
     class_resolver,
     excel_exporter,
     pms_agent_service,
+    saved_pms_store,
     session_store,
+    wt_calc,
 )
+from app.services.session_store import SessionStoreUnavailableError
 
 
 logger = logging.getLogger(__name__)
@@ -55,29 +59,92 @@ class ChatHistoryTurn(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    prompt:  str = Field(..., min_length=1)
-    history: list[ChatHistoryTurn] = Field(default_factory=list)
+    prompt:     str = Field(..., min_length=1)
+    history:    list[ChatHistoryTurn] = Field(default_factory=list)
+    # Optional — when the SPA passes it (current localStorage-tracked
+    # session id), each logged turn can be joined back to its parent
+    # row in pms_agent_sessions for full context replay.
+    session_id: Optional[str] = None
 
 
 @router.post("/chat")
-def chat(req: ChatRequest) -> dict:
+def chat(req: ChatRequest, x_user_id: Optional[str] = Header(default=None)) -> dict:
+    """One chat turn. Calls the slot-extraction service, returns the
+    structured response, and writes a row to `pms_agent_queries` for
+    cost / perf / intent analytics. Logging is best-effort — a DB
+    outage never blocks the user's chat."""
+    import time as _time
+    t0 = _time.perf_counter()
     history_dicts = [t.model_dump() for t in req.history]
-    return pms_agent_service.chat(req.prompt, history_dicts)
+
+    error: Optional[str] = None
+    response: dict = {}
+    try:
+        response = pms_agent_service.chat(req.prompt, history_dicts)
+    except Exception as e:  # noqa: BLE001
+        # Service-layer crash — log the error row and re-raise so the
+        # client gets a 5xx (instead of an empty chat reply).
+        error = f"{type(e).__name__}: {e}"
+        logger.exception("Chat service error")
+        try:
+            agent_query_log_store.log(
+                user_id=(x_user_id or "anonymous").strip() or "anonymous",
+                session_id=req.session_id,
+                prompt=req.prompt,
+                response=None,
+                metrics={"latency_ms": int((_time.perf_counter() - t0) * 1000)},
+                error=error,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+
+    # Strip + capture internal metrics before returning to the SPA.
+    meta = response.pop("_meta", {}) or {}
+    total_ms = int((_time.perf_counter() - t0) * 1000)
+    metrics = {
+        "model":      meta.get("model"),
+        "tokens_in":  meta.get("tokens_in"),
+        "tokens_out": meta.get("tokens_out"),
+        "latency_ms": total_ms,
+    }
+
+    # Best-effort write — never raise.
+    try:
+        agent_query_log_store.log(
+            user_id=(x_user_id or "anonymous").strip() or "anonymous",
+            session_id=req.session_id,
+            prompt=req.prompt,
+            response=response,
+            metrics=metrics,
+            error=None,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("agent_query_log_store.log raised — ignoring")
+
+    return response
 
 
 # ---------------------------------------------------------------------------
-# Session history (X-User-Id scoped, SQLite-backed)
+# Session history (X-User-Id scoped, Postgres-backed)
+#
+# SessionStoreUnavailableError → HTTP 503 so the frontend renders the
+# "history sync off" banner (rather than treating it as a hard failure).
+# Routes still 404 a missing-by-id read, and 500 on truly unexpected
+# faults.
 # ---------------------------------------------------------------------------
 
 def _require_user(x_user_id: Optional[str]) -> str:
     if not x_user_id or not x_user_id.strip():
-        # Match the old backend's behaviour: missing header → 503 so the UI
-        # shows "history sync off" instead of "no chats yet".
         raise HTTPException(
             status_code=503,
             detail="X-User-Id header missing — chat history disabled.",
         )
     return x_user_id.strip()
+
+
+def _db_unavailable(detail: str) -> HTTPException:
+    return HTTPException(status_code=503, detail=f"Chat history unavailable: {detail}")
 
 
 class SessionUpsertRequest(BaseModel):
@@ -94,13 +161,19 @@ class SessionPatchRequest(BaseModel):
 @router.get("/sessions")
 def list_sessions(x_user_id: Optional[str] = Header(default=None)) -> list[dict]:
     user_id = _require_user(x_user_id)
-    return session_store.list_sessions(user_id)
+    try:
+        return session_store.list_sessions(user_id)
+    except SessionStoreUnavailableError as e:
+        raise _db_unavailable(str(e)) from e
 
 
 @router.get("/sessions/{session_id}")
 def get_session(session_id: str, x_user_id: Optional[str] = Header(default=None)) -> dict:
     user_id = _require_user(x_user_id)
-    row = session_store.get_session(user_id, session_id)
+    try:
+        row = session_store.get_session(user_id, session_id)
+    except SessionStoreUnavailableError as e:
+        raise _db_unavailable(str(e)) from e
     if row is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return row
@@ -113,14 +186,17 @@ def upsert_session(
     x_user_id: Optional[str] = Header(default=None),
 ) -> dict:
     user_id = _require_user(x_user_id)
-    session_store.upsert_session(
-        user_id=user_id,
-        session_id=session_id,
-        title=req.title or "New chat",
-        blocks=req.blocks,
-        message_count=req.message_count,
-        last_preview=req.last_message_preview,
-    )
+    try:
+        session_store.upsert_session(
+            user_id=user_id,
+            session_id=session_id,
+            title=req.title or "New chat",
+            blocks=req.blocks,
+            message_count=req.message_count,
+            last_preview=req.last_message_preview,
+        )
+    except SessionStoreUnavailableError as e:
+        raise _db_unavailable(str(e)) from e
     return {"ok": True}
 
 
@@ -131,7 +207,11 @@ def rename_session(
     x_user_id: Optional[str] = Header(default=None),
 ) -> dict:
     user_id = _require_user(x_user_id)
-    if not session_store.rename_session(user_id, session_id, req.title):
+    try:
+        renamed = session_store.rename_session(user_id, session_id, req.title)
+    except SessionStoreUnavailableError as e:
+        raise _db_unavailable(str(e)) from e
+    if not renamed:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True}
 
@@ -139,9 +219,194 @@ def rename_session(
 @router.delete("/sessions/{session_id}")
 def delete_session(session_id: str, x_user_id: Optional[str] = Header(default=None)) -> dict:
     user_id = _require_user(x_user_id)
-    if not session_store.delete_session(user_id, session_id):
+    try:
+        deleted = session_store.delete_session(user_id, session_id)
+    except SessionStoreUnavailableError as e:
+        raise _db_unavailable(str(e)) from e
+    if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Save a PMS to the per-user shortlist
+#
+# Surfaced as a "Save" button on every match card in the chat. Persists
+# the (rating, material, CA, service, class_code) tuple — plus any design
+# conditions the user mentioned — into the `saved_pms` table so admins
+# can review what classes engineers are picking. Dedup per natural key:
+# saving the same class twice refreshes the design conditions + updated_at
+# rather than appending a duplicate row.
+# ---------------------------------------------------------------------------
+
+class SavePMSRequest(BaseModel):
+    piping_class:         str
+    rating:               str
+    material:             str
+    corrosion_allowance:  str
+    service:              str = ""
+    design_pressure_barg: Optional[float] = None
+    design_temp_c:        Optional[float] = None
+    mdmt_c:               Optional[float] = None
+    joint_type:           Optional[str] = None
+    note:                 str = ""
+    # Default behaviour: refuse to overwrite an existing row. The
+    # frontend retries with force=true after the user confirms the
+    # overwrite via the "Already saved" modal.
+    force:                bool = False
+
+
+@router.post("/save")
+def save_pms(
+    req: SavePMSRequest,
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict:
+    user_id = _require_user(x_user_id)
+
+    try:
+        existing = saved_pms_store.find_existing(
+            user_id=user_id,
+            piping_class=req.piping_class,
+            rating=req.rating,
+            material=req.material,
+            corrosion_allowance=req.corrosion_allowance,
+            service=req.service or "",
+        )
+    except SessionStoreUnavailableError as e:
+        raise _db_unavailable(str(e)) from e
+
+    # First-save-wins guard. Surface enough metadata about the existing
+    # row (id + timestamps + previously-stored design conditions) so the
+    # frontend modal can show "Already saved on <date>".
+    if existing and not req.force:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code":     "ALREADY_SAVED",
+                "message":  "This PMS is already saved.",
+                "existing": existing,
+            },
+        )
+
+    # Resolve the class server-side so we can persist the full PMS
+    # payload alongside the user-picked design conditions. The payload
+    # contains everything needed to re-render the report without a
+    # follow-up /resolve-class round-trip.
+    try:
+        resolved = class_resolver.resolve(
+            rating=req.rating,
+            material=req.material,
+            ca=req.corrosion_allowance,
+            service=req.service or "",
+        )
+    except class_resolver.ResolutionError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    # Sanity-check: the class code Claude / the frontend believed
+    # should match what the resolver derives. If they disagree we still
+    # save (the resolver is authoritative) but log the discrepancy.
+    derived_class = resolved.get("class_code")
+    if derived_class and derived_class != req.piping_class:
+        logger.warning(
+            "Client-claimed class %s != resolver-derived %s for "
+            "(%s, %s, CA=%s, service=%s) — storing resolver value",
+            req.piping_class, derived_class, req.rating, req.material,
+            req.corrosion_allowance, req.service,
+        )
+
+    # Compute the FULL derived snapshot so the saved payload contains
+    # every value the SPA would render — WT table per NPS, summary
+    # stats, engineering flags, Materials-tab bore sections, adequacy
+    # banner, derived design conditions (hydrotest, operating, °F).
+    # If a future render shape changes, the saved row stays frozen at
+    # the moment it was saved (which is the whole point — engineering
+    # sign-off / audit).
+    try:
+        wt_rows = wt_calc.compute_wall_thickness_rows(
+            resolved=resolved,
+            material=req.material,
+            ca=req.corrosion_allowance,
+            design_pressure_barg=req.design_pressure_barg,
+            design_temp_c=req.design_temp_c,
+            joint_type=req.joint_type,
+            service=req.service or "",
+        )
+        wt_summary = wt_calc.summary_stats(
+            wt_rows, resolved.get("pressure_temperature"),
+            req.design_pressure_barg,
+        )
+        flags = wt_calc.evaluate_flags(
+            resolved=resolved,
+            material=req.material,
+            design_temp_c=req.design_temp_c,
+            mdmt_c=req.mdmt_c,
+        )
+        materials_tab = wt_calc.build_materials_snapshot(resolved, wt_rows)
+        adequacy_check = wt_calc.adequacy(
+            resolved.get("pressure_temperature"),
+            req.design_pressure_barg, req.design_temp_c,
+        )
+        derived_conditions = wt_calc.derived_design_conditions(
+            pt=resolved.get("pressure_temperature"),
+            design_pressure_barg=req.design_pressure_barg,
+            design_temp_c=req.design_temp_c,
+            mdmt_c=req.mdmt_c,
+        )
+    except Exception as e:  # noqa: BLE001
+        # Snapshot is best-effort: if any port-layer bug fires we still
+        # want the save to succeed with the catalog payload. The admin
+        # can rebuild snapshots later.
+        logger.exception("WT snapshot failed for class %s: %s", derived_class, e)
+        wt_rows = []
+        wt_summary = {}
+        flags = []
+        materials_tab = None
+        adequacy_check = None
+        derived_conditions = {}
+
+    payload = {
+        **resolved,
+        # User-picked design conditions snapshot.
+        "design_conditions": {
+            "design_pressure_barg": req.design_pressure_barg,
+            "design_temp_c":        req.design_temp_c,
+            "mdmt_c":               req.mdmt_c,
+            "joint_type":           req.joint_type,
+        },
+        # Tab 1 — adequacy + derived design conditions.
+        "adequacy":          adequacy_check,
+        "derived_conditions": derived_conditions,
+        # Tab 2 — full per-NPS WT table + summary + engineering flags.
+        "wall_thickness": {
+            "rows":    wt_rows,
+            "summary": wt_summary,
+            "flags":   flags,
+        },
+        # Tab 3 — Pipe & Fittings Material Assignment.
+        # Branch chart already lives in code_factors.branch_chart inside
+        # `resolved`; this just covers the two bore-section tables.
+        "materials_tab": materials_tab,
+    }
+
+    try:
+        result = saved_pms_store.upsert(
+            user_id=user_id,
+            piping_class=derived_class or req.piping_class,
+            rating=req.rating,
+            material=req.material,
+            corrosion_allowance=req.corrosion_allowance,
+            service=req.service or "",
+            design_pressure_barg=req.design_pressure_barg,
+            design_temp_c=req.design_temp_c,
+            mdmt_c=req.mdmt_c,
+            joint_type=req.joint_type,
+            payload=payload,
+            note=req.note or "",
+        )
+    except SessionStoreUnavailableError as e:
+        raise _db_unavailable(str(e)) from e
+
+    return {"ok": True, **result}
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,8 @@ from app.routes.resolve_routes import router as resolve_router
 from app.routes.ai_routes import router as ai_router
 from app.routes.export_routes import router as export_router
 from app.routes.pms_agent_routes import router as pms_agent_router
-from app.services import session_store
+from app.routes.admin_routes import router as admin_router
+from app.services import agent_query_log_store, saved_pms_store, session_store
 
 
 logging.basicConfig(
@@ -46,17 +47,31 @@ app.include_router(resolve_router)
 app.include_router(ai_router)
 app.include_router(export_router)
 app.include_router(pms_agent_router)
+app.include_router(admin_router)
 
 
 @app.on_event("startup")
-def _init_session_store() -> None:
-    """Create the PMS-Agent SQLite table the first time the server boots."""
+def _init_db_tables() -> None:
+    """Create the Postgres tables the app owns on first boot. All
+    three are idempotent and non-fatal: a DB outage logs a warning and
+    the API surfaces 503 on the affected endpoints (or skips logging
+    in the case of agent_query_log_store) until the DB is back."""
     session_store.init()
+    saved_pms_store.init()
+    agent_query_log_store.init()
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse(request, "index.html")
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request):
+    """Database browser — paired with the /api/admin/* JSON endpoints.
+    No backend auth; deploy behind a trusted SPA / reverse proxy when
+    exposing publicly."""
+    return templates.TemplateResponse(request, "admin.html")
 
 
 @app.get("/health")

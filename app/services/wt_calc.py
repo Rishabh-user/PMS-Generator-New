@@ -1,0 +1,621 @@
+"""B31.3 wall-thickness engine — Python port of the client-side
+calc in src/lib/pmsCalc.ts.
+
+Used by the save flow to snapshot the full per-NPS WT table into the
+`payload` JSONB column at save time, so saved PMSes carry every derived
+value the SPA would render (instead of relying on the recall-time
+client to recompute).
+
+References:
+  • ASME B31.3 §304.1.2 Eq. 3a  — internal-pressure wall thickness
+  • ASME B31.3 Table A-1        — allowable stress S vs T
+  • ASME B31.3 Table 304.1.1    — Y coefficient vs T
+  • ASME B31.3 Table 302.3.5    — W weld-strength reduction factor
+  • ASME B36.10M / B36.19M      — schedule selection
+"""
+from __future__ import annotations
+
+import json
+import re
+from functools import lru_cache
+from typing import Any, Optional
+
+from app.config import settings
+
+
+# ── Constants ──────────────────────────────────────────────────────
+
+PSI_TO_MPA = 0.00689476
+BARG_TO_PSIG = 14.5038
+MILL_TOLERANCE = 0.125          # 12.5% — ASME B36.10M seamless
+HYDROTEST_FACTOR = 1.5          # ASME B31.3 §345.4.2(a)
+OPERATING_FACTOR = 0.8          # rule-of-thumb 80%-of-design estimate
+
+
+# ── Helpers ────────────────────────────────────────────────────────
+
+def barg_to_psig(b: Optional[float]) -> Optional[float]:
+    return None if b is None else b * BARG_TO_PSIG
+
+
+def c_to_f(c: Optional[float]) -> Optional[float]:
+    return None if c is None else c * 9 / 5 + 32
+
+
+def parse_corrosion_mm(ca: Optional[str]) -> float:
+    if not ca:
+        return 0.0
+    if re.match(r"^\s*NIL\s*$", ca, re.I):
+        return 0.0
+    m = re.search(r"(\d+(?:\.\d+)?)", ca)
+    return float(m.group(1)) if m else 0.0
+
+
+def joint_efficiency_from_label(joint_type: Optional[str]) -> float:
+    return {
+        "Seamless":      1.0,
+        "EFW, 100% RT":  1.0,
+        "ERW":           0.85,
+        "EFW":           0.85,
+    }.get((joint_type or "").strip(), 1.0)
+
+
+def material_uses_stainless_schedules(material: Optional[str]) -> bool:
+    if not material:
+        return False
+    return bool(re.search(
+        r"(?:^|\b)(SS\s*316|SS\s*304|TP\s*316|TP\s*304|6\s*MO|N08367)",
+        material, re.I,
+    ))
+
+
+# ── Linear interpolation ──────────────────────────────────────────
+
+def _interpolate_at_temp(by_temp_c: dict, target_t: float) -> tuple[Optional[float], Optional[str]]:
+    if not by_temp_c:
+        return None, None
+    keys = sorted(float(k) for k in by_temp_c.keys())
+    if not keys:
+        return None, None
+    if target_t <= keys[0]:
+        v = float(by_temp_c[_match_key(by_temp_c, keys[0])])
+        return v, ("low" if target_t < keys[0] else None)
+    last = keys[-1]
+    if target_t >= last:
+        v = float(by_temp_c[_match_key(by_temp_c, last)])
+        return v, ("high" if target_t > last else None)
+    for i in range(len(keys) - 1):
+        t1, t2 = keys[i], keys[i + 1]
+        if t1 <= target_t <= t2:
+            v1 = float(by_temp_c[_match_key(by_temp_c, t1)])
+            v2 = float(by_temp_c[_match_key(by_temp_c, t2)])
+            frac = (target_t - t1) / (t2 - t1)
+            return v1 + frac * (v2 - v1), None
+    return float(by_temp_c[_match_key(by_temp_c, last)]), "high"
+
+
+def _match_key(by_temp_c: dict, target: float) -> str:
+    """Find the actual string key in by_temp_c that equals `target`.
+    JSON files vary: some use ints ('38'), some use floats ('38.0')."""
+    target_int = int(target) if float(target).is_integer() else None
+    for k in by_temp_c:
+        try:
+            if float(k) == target:
+                return k
+        except (TypeError, ValueError):
+            continue
+    # Fallback — should not happen if `target` came from the same dict.
+    return str(target_int if target_int is not None else target)
+
+
+def lookup_stress(stress_table: Optional[dict], temp_c: Optional[float]) -> Optional[dict]:
+    if not stress_table or temp_c is None:
+        return None
+    by_temp = stress_table.get("stress_psi_by_temp_c") or {}
+    value, clamped = _interpolate_at_temp(by_temp, temp_c)
+    if value is None:
+        return None
+    rounded = round(value / 100) * 100
+    return {
+        "stress_psi": rounded,
+        "stress_mpa": round(rounded * PSI_TO_MPA * 10) / 10,
+        "clamped": clamped,
+    }
+
+
+def lookup_y(y_curve: Optional[dict], temp_c: Optional[float]) -> Optional[dict]:
+    if not y_curve or temp_c is None:
+        return None
+    temps = y_curve.get("temperatures_c") or []
+    yvals = y_curve.get("y_values") or []
+    if not temps or not yvals or len(temps) != len(yvals):
+        return None
+    by_temp = {str(temps[i]): yvals[i] for i in range(len(temps)) if yvals[i] is not None}
+    value, clamped = _interpolate_at_temp(by_temp, temp_c)
+    if value is None:
+        return None
+    return {"y": round(value * 100) / 100, "clamped": clamped}
+
+
+def interpolate_pressure(temps: list[float], pressures: list[float], target_t: float) -> Optional[float]:
+    if not temps or not pressures:
+        return None
+    if target_t <= temps[0]:
+        return float(pressures[0])
+    if target_t >= temps[-1]:
+        return float(pressures[-1])
+    for i in range(len(temps) - 1):
+        if temps[i] <= target_t <= temps[i + 1]:
+            t1, t2 = temps[i], temps[i + 1]
+            p1, p2 = pressures[i], pressures[i + 1]
+            return p1 + (p2 - p1) * (target_t - t1) / (t2 - t1)
+    return float(pressures[-1])
+
+
+# ── NPS + pipe-dimension loaders (cached) ──────────────────────────
+
+_GRE_PATTERN = re.compile(r"(?i)\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced")
+_BONSTRAND_SVC = re.compile(r"(?i)Hypochlorite|BONSTRAND")
+_NPS_OVERRIDES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"(?i)\bCuNi\b|C70600|B466"),       "nps_dimensions_cuni.json"),
+    (re.compile(r"(?i)\bCOPPER\b|C12200|\bB42\b"),  "nps_dimensions_copper.json"),
+    (re.compile(r"(?i)\bCPVC\b"),                   "nps_dimensions_cpvc.json"),
+    (re.compile(r"(?i)\bTITANIUM\b|\bTi\b|B861"),   "nps_dimensions_titanium.json"),
+    (re.compile(r"(?i)Tubing|N08367|6\s*MO"),       "nps_dimensions_tubing.json"),
+]
+
+
+def _resolve_nps_file(material: Optional[str], service: Optional[str]) -> str:
+    if not material:
+        return "nps_dimensions.json"
+    if _GRE_PATTERN.search(material):
+        if service and _BONSTRAND_SVC.search(service):
+            return "nps_dimensions_gre_bonstrand.json"
+        return "nps_dimensions_gre.json"
+    for pat, fname in _NPS_OVERRIDES:
+        if pat.search(material):
+            return fname
+    return "nps_dimensions.json"
+
+
+@lru_cache(maxsize=16)
+def _load_json(filename: str) -> dict:
+    path = settings.data_dir / filename
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def load_nps_dimensions(material: Optional[str], service: Optional[str]) -> dict:
+    return _load_json(_resolve_nps_file(material, service))
+
+
+@lru_cache(maxsize=1)
+def _b3610_indexed() -> dict[float, list[dict]]:
+    data = _load_json("pipe_dimensions_b3610.json")
+    by_nps: dict[float, list[dict]] = {}
+    for r in data.get("rows", []):
+        if r.get("schedule") is None and r.get("identification") is None:
+            continue
+        if r.get("wt_mm") is None:
+            continue
+        by_nps.setdefault(r["nps_decimal"], []).append(r)
+    for k in by_nps:
+        by_nps[k].sort(key=lambda r: r["wt_mm"])
+    return by_nps
+
+
+@lru_cache(maxsize=1)
+def _b3619_indexed() -> dict[float, list[dict]]:
+    try:
+        data = _load_json("pipe_dimensions_b3619.json")
+    except FileNotFoundError:
+        return {}
+    by_nps: dict[float, list[dict]] = {}
+    for r in data.get("rows", []):
+        if r.get("wt_mm") is None:
+            continue
+        by_nps.setdefault(r["nps_decimal"], []).append(r)
+    for k in by_nps:
+        by_nps[k].sort(key=lambda r: r["wt_mm"])
+    return by_nps
+
+
+# ── Schedule pick ─────────────────────────────────────────────────
+
+def pick_schedule(
+    nps_decimal: float, calc_thk_mm: Optional[float], material: str,
+    nps_row: Optional[dict] = None,
+) -> Optional[dict]:
+    """Pick lightest pipe wall ≥ calc_thk for the given NPS, honouring
+    per-material overrides (Titanium A70 etc.) when the NPS row carries
+    explicit (sch, wt_mm) fields."""
+    if nps_row and nps_row.get("sch") is not None and nps_row.get("wt_mm") is not None:
+        return {
+            "sch_display": str(nps_row["sch"]),
+            "wt_mm":       float(nps_row["wt_mm"]),
+            "status":      "OK",
+            "table":       "project-spec",
+        }
+    if calc_thk_mm is None:
+        return None
+
+    use_ss = material_uses_stainless_schedules(material)
+    primary = _b3619_indexed() if use_ss else _b3610_indexed()
+    fallback = _b3610_indexed() if use_ss else None
+
+    def _from(table: dict) -> Optional[dict]:
+        rows = table.get(nps_decimal) or []
+        for r in rows:
+            if (r.get("wt_mm") or 0) >= calc_thk_mm:
+                return r
+        return None
+
+    pick = _from(primary)
+    used = "B36.19M" if use_ss else "B36.10M"
+    if not pick and fallback:
+        pick = _from(fallback)
+        if pick:
+            used = "B36.10M (fallback from B36.19M)"
+
+    status = "OK"
+    if not pick:
+        # Couldn't satisfy calc_thk — report heaviest row + NOT OK.
+        heavy = fallback or primary
+        rows = heavy.get(nps_decimal) or []
+        if not rows:
+            return None
+        pick = rows[-1]
+        status = "NOT OK"
+
+    display = pick.get("schedule")
+    if display is None:
+        display = pick.get("identification") or "—"
+    return {
+        "sch_display": str(display),
+        "wt_mm":       float(pick.get("wt_mm") or 0),
+        "status":      status,
+        "table":       used,
+    }
+
+
+# ── Eq. 3a per-NPS ────────────────────────────────────────────────
+
+def _t_d_ratio(P_psi, S_psi, E, Y, W) -> Optional[float]:
+    if P_psi is None or S_psi is None or Y is None or W is None:
+        return None
+    denom = 2 * (S_psi * E * W + P_psi * Y)
+    return (P_psi / denom) if denom > 0 else None
+
+
+def compute_wall_thickness_rows(
+    *,
+    resolved: dict,
+    material: str,
+    ca: str,
+    design_pressure_barg: Optional[float],
+    design_temp_c: Optional[float],
+    joint_type: Optional[str],
+    service: Optional[str] = None,
+) -> list[dict]:
+    """Faithful Python port of computeWallThicknessRows() in pmsCalc.ts.
+    Returns one row per NPS in the material's dimension list."""
+    nps_doc = load_nps_dimensions(material, service)
+    nps_rows = nps_doc.get("rows") or []
+    if not nps_rows:
+        return []
+
+    cf = resolved.get("code_factors") or {}
+    stress_table = cf.get("stress_table")
+    y_curve = cf.get("y_curve")
+    pt = resolved.get("pressure_temperature") or {}
+
+    cold_pbarg = (pt.get("cold_point") or {}).get("pressure_barg")
+    cold_tc = (pt.get("temperatures_c") or [None])[0]
+
+    P1 = barg_to_psig(cold_pbarg)
+    P2 = barg_to_psig(design_pressure_barg) if design_pressure_barg is not None else None
+    s_cold = lookup_stress(stress_table, cold_tc) if (stress_table and cold_tc is not None) else None
+    s_hot  = lookup_stress(stress_table, design_temp_c) if (stress_table and design_temp_c is not None) else None
+    S1 = s_cold["stress_psi"] if s_cold else None
+    S2 = s_hot["stress_psi"]  if s_hot  else None
+
+    E = joint_efficiency_from_label(joint_type)
+    y_at = lookup_y(y_curve, design_temp_c) if design_temp_c is not None else None
+    Y = y_at["y"] if y_at else None
+    W = 1.0 if (design_temp_c is not None and design_temp_c <= 510) else None
+
+    C_mm = parse_corrosion_mm(ca)
+    mill_tol = MILL_TOLERANCE
+
+    tD1 = _t_d_ratio(P1, S1, E, Y, W)
+    tD2 = _t_d_ratio(P2, S2, E, Y, W)
+    candidates = [v for v in (tD1, tD2) if v is not None]
+    tD_max = max(candidates) if candidates else None
+
+    out: list[dict] = []
+    for r in nps_rows:
+        D = float(r["od_mm"])
+        t_mm = (tD_max * D) if tD_max is not None else None
+        d_over_6 = D / 6
+        validity = (
+            "OK" if (t_mm is not None and t_mm < d_over_6)
+            else ("ALERT" if t_mm is not None else None)
+        )
+        tm = (t_mm + C_mm) if t_mm is not None else None
+        calc_thk = (tm / (1 - mill_tol)) if tm is not None else None
+        sched = pick_schedule(float(r["nps_decimal"]), calc_thk, material, r)
+        sel_thk_mm = sched["wt_mm"] if sched else None
+
+        # MAWP @ design T using inverse Eq. 3a, t_eff = sel*(1-mill) − c
+        mawp_barg: Optional[float] = None
+        margin_pct: Optional[float] = None
+        if sel_thk_mm is not None and S2 is not None and W is not None and Y is not None:
+            t_eff_mm = sel_thk_mm * (1 - mill_tol) - C_mm
+            if t_eff_mm > 0:
+                t_eff_in = t_eff_mm / 25.4
+                D_in = D / 25.4
+                denom = D_in - 2 * Y * t_eff_in
+                if denom > 0:
+                    mawp_psi = (2 * S2 * E * W * t_eff_in) / denom
+                    mawp_barg = mawp_psi / BARG_TO_PSIG
+                    if design_pressure_barg and design_pressure_barg > 0:
+                        margin_pct = ((mawp_barg - design_pressure_barg) / design_pressure_barg) * 100
+
+        out.append({
+            "nps":         str(r["nps"]),
+            "nps_decimal": float(r["nps_decimal"]),
+            "od_mm":       D,
+            "t_mm":        t_mm,
+            "d_over_6":    d_over_6,
+            "validity":    validity,
+            "tm_mm":       tm,
+            "mill_tol":    mill_tol,
+            "calc_thk_mm": calc_thk,
+            "sch_display": sched["sch_display"] if sched else None,
+            "sel_thk_mm":  sel_thk_mm,
+            "sch_status":  sched["status"] if sched else None,
+            "mawp_barg":   mawp_barg,
+            "margin_pct":  margin_pct,
+        })
+    return out
+
+
+def summary_stats(rows: list[dict], pt: Optional[dict], design_pressure_barg: Optional[float]) -> dict:
+    mawps = [r["mawp_barg"] for r in rows if r.get("mawp_barg") is not None]
+    margins = [r["margin_pct"] for r in rows if r.get("margin_pct") is not None]
+    max_rated = None
+    if pt and pt.get("pressures_barg"):
+        max_rated = max(pt["pressures_barg"])
+    elif design_pressure_barg is not None:
+        max_rated = design_pressure_barg
+    hydro = (max_rated * HYDROTEST_FACTOR) if max_rated is not None else None
+    return {
+        "min_mawp_barg":     min(mawps) if mawps else None,
+        "max_mawp_barg":     max(mawps) if mawps else None,
+        "min_margin_pct":    min(margins) if margins else None,
+        "hydrotest_barg":    hydro,
+        "total_nps_sizes":   len(rows),
+    }
+
+
+# ── Engineering Requirements & Flags ──────────────────────────────
+
+def evaluate_flags(
+    *, resolved: dict, material: str, design_temp_c: Optional[float], mdmt_c: Optional[float],
+) -> list[dict]:
+    """Faithful port of evaluateFlags() in pmsCalc.ts."""
+    flags: list[dict] = []
+    cf = resolved.get("code_factors") or {}
+    clean_mat = re.sub(r"\s*\(.*?\)\s*", "", material or "").strip()
+    is_austenitic = (cf.get("y_curve") or {}).get("category") == "austenitic_steels"
+
+    if not cf.get("stress_table"):
+        flags.append({
+            "level": "critical",
+            "title": "No ASME B31.3 Allowable Stress",
+            "body":  f"Material {clean_mat} is not tabulated in B31.3 Table A-1 — likely composite or non-metal pipe (e.g. GRE per ISO 14692, CPVC per ASTM F441). Wall thickness cannot be computed from Eq. 3a; refer to material-specific design rules.",
+        })
+    if material and re.search(r"NACE", material, re.I):
+        flags.append({
+            "level": "mandatory",
+            "title": "NACE MR0175 / ISO 15156 — Sour Service",
+            "body":  "Material hardness controlled per NACE MR0175 (HRC ≤ 22 base metal, HV ≤ 250 weld). Heat-treatment certification, HIC / SSC qualification required. Project policy caps service temperature at 250°C for sour-service lines.",
+        })
+    if material and re.match(r"^LTCS", material, re.I):
+        md = f"{mdmt_c:.0f}°C" if (mdmt_c is not None) else "MDMT"
+        flags.append({
+            "level": "mandatory",
+            "title": "Low-Temperature Service — A333 Gr 6",
+            "body":  f"Charpy V-notch impact testing per ASTM A333 Gr 6 — minimum 13.5 ft·lbf at {md}. Welding procedure qualification at MDMT is mandatory; PWHT records to be retained.",
+        })
+    if (cf.get("stress_table") or {}).get("key") == "API5LX60":
+        flags.append({
+            "level": "note",
+            "title": "API 5L X60 PSL-2 Promoted (High-Pressure NACE)",
+            "body":  "For 1500# / 2500# CS NACE classes, project convention specs API 5L Grade X60 PSL-2 line pipe (S = 25,000 psi cold) instead of A106 Gr B (S = 20,000 psi). Wall thickness uses the X60 stress curve.",
+        })
+    if design_temp_c is not None and design_temp_c > 482 and not is_austenitic:
+        flags.append({
+            "level": "warning",
+            "title": "Y Coefficient — Above Ferritic Baseline (482°C)",
+            "body":  f"Design temperature {design_temp_c:.0f}°C exceeds the 482°C ferritic baseline in B31.3 Table 304.1.1. Y rises in steps (0.4 → 0.5 at 510°C → 0.7 at 538°C). Verify the interpolation against your actual material spec.",
+        })
+    if design_temp_c is not None and design_temp_c > 510:
+        flags.append({
+            "level": "warning",
+            "title": "W Factor — Above Creep Onset (510°C)",
+            "body":  f"Design temperature {design_temp_c:.0f}°C exceeds the 510°C creep onset. W = 1 still applies for seamless / 100% RT welded pipe; for lower joint efficiencies W < 1 per Table 302.3.5 — review weld strength reduction.",
+        })
+    if material and re.search(r"GALV", material, re.I) and design_temp_c is not None and design_temp_c > 200:
+        flags.append({
+            "level": "warning",
+            "title": "Galvanizing — Above Coating Temperature Limit",
+            "body":  f"Design temperature {design_temp_c:.0f}°C exceeds the typical hot-dip galvanized zinc coating limit (~200°C). Coating may degrade in service — verify temperature compatibility or specify an alternative coating system.",
+        })
+    if cf.get("stress_table"):
+        flags.append({
+            "level": "note",
+            "title": "Operating Conditions — 80% Estimate",
+            "body":  "The “Operating (est. 80%)” pressure / temperature on the Derived Design Conditions card is a rule-of-thumb estimate (0.8 × design). Replace with actual process operating point when available.",
+        })
+    return flags
+
+
+# ── Materials tab snapshot ─────────────────────────────────────────
+
+_COMPONENT_ROWS: list[dict] = [
+    {"name": "90° LR Elbow",        "spec_key": "fittings",      "sch_kind": "pipe",  "standard": "ASME B 16.9"},
+    {"name": "45° Elbow",           "spec_key": "fittings",      "sch_kind": "pipe",  "standard": "ASME B 16.9"},
+    {"name": "Equal Tee",           "spec_key": "fittings",      "sch_kind": "pipe",  "standard": "ASME B 16.9"},
+    {"name": "Reducing Tee",        "spec_key": "fittings",      "sch_kind": "pipe",  "standard": "ASME B 16.9"},
+    {"name": "Concentric Reducer",  "spec_key": "fittings",      "sch_kind": "pipe",  "standard": "ASME B 16.9"},
+    {"name": "Eccentric Reducer",   "spec_key": "fittings",      "sch_kind": "pipe",  "standard": "ASME B 16.9"},
+    {"name": "Pipe Cap",            "spec_key": "fittings",      "sch_kind": "b16.9", "standard": "ASME B 16.9"},
+    {"name": "Plug",                "spec_key": "fittings",      "sch_kind": "—",     "standard": "Hex Head Plug, ASME B 16.11"},
+    {"name": "Weldolet",            "spec_key": "branch_outlet", "sch_kind": "—",     "standard": "MSS SP-97"},
+]
+
+
+def _dominant_schedule_in_range(rows: list[dict], lo: float, hi: float) -> Optional[str]:
+    counts: dict[str, int] = {}
+    for r in rows:
+        try:
+            n = float(r["nps"])
+        except (TypeError, ValueError):
+            continue
+        if n < lo or n > hi:
+            continue
+        sch = r.get("sch_display")
+        if not sch or r.get("sch_status") == "NOT OK":
+            continue
+        counts[sch] = counts.get(sch, 0) + 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def _format_schedule(s: Optional[str]) -> str:
+    if not s:
+        return "—"
+    return s if re.match(r"^[A-Z]{2,}$", s) else f"SCH {s}"
+
+
+def _connection_wording(family: Optional[str], is_large_bore: bool) -> str:
+    if not family:
+        return "—"
+    if is_large_bore:
+        return "Butt Weld (SCH to match pipe), Welded"
+    if re.search(r"COPPER", family, re.I):
+        return "Sweat / threaded fitting per B16.22"
+    if re.search(r"GRE", family, re.I):
+        return "Adhesive bonded / threaded per ISO 14692"
+    if re.search(r"CPVC", family, re.I):
+        return "Solvent weld per ASTM F 493"
+    if re.search(r"TUBING", family, re.I):
+        return "Compression / cone & thread (Swagelok)"
+    return "Butt Weld (SCH to match pipe), Seamless"
+
+
+def _fitting_schedule_cell(kind: str, bore_sch: Optional[str]) -> str:
+    if kind == "—" or not bore_sch:
+        return "—"
+    if kind == "b16.9":
+        return "ASME B 16.9"
+    return f"Sch {bore_sch}"
+
+
+def _build_bore_rows(specs: dict, bore_sch: Optional[str]) -> list[dict]:
+    rows = [{
+        "component": "Pipe",
+        "material":  specs.get("pipe") or "—",
+        "schedule":  _format_schedule(bore_sch),
+        "standard":  "ASTM",
+    }]
+    for c in _COMPONENT_ROWS:
+        rows.append({
+            "component": c["name"],
+            "material":  specs.get(c["spec_key"]) or "—",
+            "schedule":  _fitting_schedule_cell(c["sch_kind"], bore_sch),
+            "standard":  c["standard"],
+        })
+    return rows
+
+
+def build_materials_snapshot(resolved: dict, wt_rows: list[dict]) -> Optional[dict]:
+    specs = (resolved.get("code_factors") or {}).get("fitting_specs") or {}
+    if not specs:
+        return None
+    small_sch = _dominant_schedule_in_range(wt_rows, 0, 2)
+    large_sch = _dominant_schedule_in_range(wt_rows, 2.5, 80)
+    family = specs.get("family")
+    return {
+        "small_bore": {
+            "range":       'NPS ½" – 2"',
+            "connection":  _connection_wording(family, False),
+            "schedule":    _format_schedule(small_sch),
+            "rows":        _build_bore_rows(specs, small_sch),
+        },
+        "large_bore": {
+            "range":       'NPS 2½" – 36"',
+            "connection":  _connection_wording(family, True),
+            "schedule":    _format_schedule(large_sch),
+            "rows":        _build_bore_rows(specs, large_sch),
+        },
+    }
+
+
+# ── Adequacy banner + derived design conditions ───────────────────
+
+def adequacy(pt: Optional[dict], design_pressure_barg: Optional[float], design_temp_c: Optional[float]) -> Optional[dict]:
+    """Returns {adequate, rated_p_at_design_t} or None when the check
+    can't be made (missing data)."""
+    if not pt or design_pressure_barg is None or design_temp_c is None:
+        return None
+    temps = pt.get("temperatures_c") or []
+    pressures = pt.get("pressures_barg") or []
+    if not temps or not pressures:
+        return None
+    rated = interpolate_pressure(temps, pressures, design_temp_c)
+    if rated is None:
+        return None
+    return {
+        "rated_pressure_at_design_t_barg": rated,
+        "design_pressure_barg":            design_pressure_barg,
+        "design_temp_c":                   design_temp_c,
+        # Same 0.05 barg tolerance the SPA banner uses.
+        "adequate": rated + 0.05 >= design_pressure_barg,
+    }
+
+
+def derived_design_conditions(
+    *, pt: Optional[dict], design_pressure_barg: Optional[float],
+    design_temp_c: Optional[float], mdmt_c: Optional[float],
+) -> dict:
+    p_psig  = barg_to_psig(design_pressure_barg)
+    op_p    = (design_pressure_barg * OPERATING_FACTOR) if design_pressure_barg is not None else None
+    op_t    = (design_temp_c * OPERATING_FACTOR) if design_temp_c is not None else None
+    # Hydrotest = max rated P × 1.5 (preferring the indexed cold-point)
+    max_rated = None
+    if pt and pt.get("pressures_barg"):
+        max_rated = max(pt["pressures_barg"])
+    elif design_pressure_barg is not None:
+        max_rated = design_pressure_barg
+    hydro_p_barg = (max_rated * HYDROTEST_FACTOR) if max_rated is not None else None
+    return {
+        "pressure": {
+            "design_barg":           design_pressure_barg,
+            "design_psig":           p_psig,
+            "hydrotest_barg":        hydro_p_barg,
+            "hydrotest_psig":        barg_to_psig(hydro_p_barg),
+            "operating_estimate_barg": op_p,
+            "operating_estimate_psig": barg_to_psig(op_p),
+        },
+        "temperature": {
+            "design_c":              design_temp_c,
+            "design_f":              c_to_f(design_temp_c),
+            "operating_estimate_c":  op_t,
+            "operating_estimate_f":  c_to_f(op_t),
+            "mdmt_c":                mdmt_c,
+            "mdmt_f":                c_to_f(mdmt_c),
+        },
+    }
