@@ -324,8 +324,22 @@ def compute_wall_thickness_rows(
     design_temp_c: Optional[float],
     joint_type: Optional[str],
     service: Optional[str] = None,
+    use_design_point_only: bool = False,
 ) -> list[dict]:
-    """Faithful Python port of computeWallThicknessRows() in pmsCalc.ts.
+    """B31.3 §304.1.2 Eq. 3a per NPS.
+
+    `use_design_point_only` controls the worst-case logic:
+      • False (default — "envelope" mode): evaluate Eq. 3a at BOTH the
+        cold-end of the P-T curve (Min T / Max P) AND at the user-
+        supplied design point (Max T 300 °C cap / rated P at that T),
+        then take the max. This is the conservative default that
+        designs for the class's full operating envelope.
+      • True ("user-pinned" mode): evaluate Eq. 3a at the design point
+        only. Used when the engineer has explicitly typed a specific
+        P / T pair via the chat agent or the design inputs — the
+        cold-end is intentionally skipped because the user is
+        committing to that single operating point.
+
     Returns one row per NPS in the material's dimension list."""
     nps_doc = load_nps_dimensions(material, service)
     nps_rows = nps_doc.get("rows") or []
@@ -337,15 +351,20 @@ def compute_wall_thickness_rows(
     y_curve = cf.get("y_curve")
     pt = resolved.get("pressure_temperature") or {}
 
-    cold_pbarg = (pt.get("cold_point") or {}).get("pressure_barg")
-    cold_tc = (pt.get("temperatures_c") or [None])[0]
+    # Design point (always evaluated).
+    P_psi_d = barg_to_psig(design_pressure_barg) if design_pressure_barg is not None else None
+    s_hot = lookup_stress(stress_table, design_temp_c) if (stress_table and design_temp_c is not None) else None
+    S_d = s_hot["stress_psi"] if s_hot else None
 
-    P1 = barg_to_psig(cold_pbarg)
-    P2 = barg_to_psig(design_pressure_barg) if design_pressure_barg is not None else None
-    s_cold = lookup_stress(stress_table, cold_tc) if (stress_table and cold_tc is not None) else None
-    s_hot  = lookup_stress(stress_table, design_temp_c) if (stress_table and design_temp_c is not None) else None
-    S1 = s_cold["stress_psi"] if s_cold else None
-    S2 = s_hot["stress_psi"]  if s_hot  else None
+    # Cold-end point (only used in envelope mode).
+    P_psi_c = None
+    S_c = None
+    if not use_design_point_only:
+        cold_pbarg = (pt.get("cold_point") or {}).get("pressure_barg")
+        cold_tc = (pt.get("temperatures_c") or [None])[0]
+        P_psi_c = barg_to_psig(cold_pbarg)
+        s_cold = lookup_stress(stress_table, cold_tc) if (stress_table and cold_tc is not None) else None
+        S_c = s_cold["stress_psi"] if s_cold else None
 
     E = joint_efficiency_from_label(joint_type)
     y_at = lookup_y(y_curve, design_temp_c) if design_temp_c is not None else None
@@ -355,15 +374,20 @@ def compute_wall_thickness_rows(
     C_mm = parse_corrosion_mm(ca)
     mill_tol = MILL_TOLERANCE
 
-    tD1 = _t_d_ratio(P1, S1, E, Y, W)
-    tD2 = _t_d_ratio(P2, S2, E, Y, W)
-    candidates = [v for v in (tD1, tD2) if v is not None]
-    tD_max = max(candidates) if candidates else None
+    tD_design = _t_d_ratio(P_psi_d, S_d, E, Y, W)
+    if use_design_point_only:
+        tD = tD_design
+    else:
+        tD_cold = _t_d_ratio(P_psi_c, S_c, E, Y, W)
+        candidates = [v for v in (tD_cold, tD_design) if v is not None]
+        tD = max(candidates) if candidates else None
+    # MAWP is always computed at the operating point (design T).
+    S = S_d
 
     out: list[dict] = []
     for r in nps_rows:
         D = float(r["od_mm"])
-        t_mm = (tD_max * D) if tD_max is not None else None
+        t_mm = (tD * D) if tD is not None else None
         d_over_6 = D / 6
         validity = (
             "OK" if (t_mm is not None and t_mm < d_over_6)
@@ -377,14 +401,14 @@ def compute_wall_thickness_rows(
         # MAWP @ design T using inverse Eq. 3a, t_eff = sel*(1-mill) − c
         mawp_barg: Optional[float] = None
         margin_pct: Optional[float] = None
-        if sel_thk_mm is not None and S2 is not None and W is not None and Y is not None:
+        if sel_thk_mm is not None and S is not None and W is not None and Y is not None:
             t_eff_mm = sel_thk_mm * (1 - mill_tol) - C_mm
             if t_eff_mm > 0:
                 t_eff_in = t_eff_mm / 25.4
                 D_in = D / 25.4
                 denom = D_in - 2 * Y * t_eff_in
                 if denom > 0:
-                    mawp_psi = (2 * S2 * E * W * t_eff_in) / denom
+                    mawp_psi = (2 * S * E * W * t_eff_in) / denom
                     mawp_barg = mawp_psi / BARG_TO_PSIG
                     if design_pressure_barg and design_pressure_barg > 0:
                         margin_pct = ((mawp_barg - design_pressure_barg) / design_pressure_barg) * 100
@@ -479,6 +503,45 @@ def evaluate_flags(
             "level": "warning",
             "title": "W Factor — Above Creep Onset (510°C)",
             "body":  f"Design temperature {design_temp_c:.0f}°C exceeds the 510°C creep onset. W = 1 still applies for seamless / 100% RT welded pipe; for lower joint efficiencies W < 1 per Table 302.3.5 — review weld strength reduction.",
+        })
+
+    # Customized (new-spec) PMS — fires when design T exceeds the
+    # standard envelope cap (300 °C). The class_code in the snapshot
+    # gets a "New-spec-[base]" rename in this zone; this flag makes
+    # the engineer-review requirement visible inside the report's
+    # Engineering Requirements & Flags panel.
+    if design_temp_c is not None and design_temp_c > 300:
+        flags.append({
+            "level": "mandatory",
+            "title": "Customized PMS — Engineering Review Required",
+            "body":  (
+                f"Design temperature {design_temp_c:.0f}°C is outside the "
+                "standard 0–300 °C envelope. This PMS has been generated "
+                "as a non-standard variant (class code prefixed with "
+                "\"New-spec-\") and the wall-thickness calc uses your "
+                "single design point only (no cold-end envelope check). "
+                "Please consult a technical engineer to verify suitability "
+                "for sustained service before issuing this report."
+            ),
+        })
+
+    # Carbon-steel creep / graphitization range. ASME B16.5 Note (1) for
+    # Group 1.1 caps prolonged use of plain CS at 425 °C; B31.3 starts
+    # creep checks ~370 °C for CS. These two flags fire in the 370–425
+    # range (caution) and >425 °C (stronger warning) — exactly the
+    # zone an engineer needs flagged when running CS hot.
+    is_plain_cs = bool(material) and bool(re.search(r"^\s*(?:CS|LTCS)\s*(?:NACE)?\s*$", material, re.I))
+    if is_plain_cs and design_temp_c is not None and 370 < design_temp_c <= 425:
+        flags.append({
+            "level": "warning",
+            "title": "Carbon Steel — Creep & Graphitization Caution (370–425 °C)",
+            "body":  f"Design temperature {design_temp_c:.0f}°C enters the creep range for plain carbon steel (onset ~370 °C). Long-term exposure can cause graphitization of the carbide phase. Consider Cr-Mo alloy steel (e.g. P11 / P22) if continuous service is expected.",
+        })
+    if is_plain_cs and design_temp_c is not None and design_temp_c > 425:
+        flags.append({
+            "level": "warning",
+            "title": "Carbon Steel — Above ASME B16.5 Prolonged-Service Limit (425 °C)",
+            "body":  f"Design temperature {design_temp_c:.0f}°C exceeds 425 °C — per ASME B16.5 Table 2-1.1 Note (1), prolonged use of Group 1.1 carbon steel above 425 °C is permissible but NOT recommended (carbide may convert to graphite). Specify a chromium-molybdenum alloy steel for continuous service.",
         })
     if material and re.search(r"GALV", material, re.I) and design_temp_c is not None and design_temp_c > 200:
         flags.append({
@@ -630,6 +693,7 @@ def build_formula_example(
     design_temp_c: Optional[float],
     joint_type: Optional[str],
     service: Optional[str] = None,
+    use_design_point_only: bool = False,
 ) -> Optional[dict]:
     """Worked example for the B31.3 §304.1.2 Eq. 3a formula card on
     Tab 2. Picks NPS 6 (project convention) or the largest available
@@ -661,16 +725,24 @@ def build_formula_example(
     y_curve = cf.get("y_curve")
     pt = resolved.get("pressure_temperature") or {}
 
-    cold_pbarg = (pt.get("cold_point") or {}).get("pressure_barg")
-    cold_tc = (pt.get("temperatures_c") or [None])[0]
-    cold_label = (pt.get("temp_labels") or [None])[0] or (str(int(cold_tc)) if cold_tc is not None else "—")
-
-    P1_psi = barg_to_psig(cold_pbarg)
+    # Design point (always evaluated).
     P2_psi = barg_to_psig(design_pressure_barg) if design_pressure_barg is not None else None
-    s_cold = lookup_stress(stress_table, cold_tc) if (stress_table and cold_tc is not None) else None
-    s_hot  = lookup_stress(stress_table, design_temp_c) if (stress_table and design_temp_c is not None) else None
-    S1 = s_cold["stress_psi"] if s_cold else None
-    S2 = s_hot["stress_psi"]  if s_hot  else None
+    s_hot = lookup_stress(stress_table, design_temp_c) if (stress_table and design_temp_c is not None) else None
+    S2 = s_hot["stress_psi"] if s_hot else None
+
+    # Cold-end point (only used in envelope mode).
+    P1_psi = None
+    S1 = None
+    cold_label = None
+    if not use_design_point_only:
+        cold_pbarg = (pt.get("cold_point") or {}).get("pressure_barg")
+        cold_tc = (pt.get("temperatures_c") or [None])[0]
+        cold_label = (pt.get("temp_labels") or [None])[0] or (
+            str(int(cold_tc)) if cold_tc is not None else "—"
+        )
+        P1_psi = barg_to_psig(cold_pbarg)
+        s_cold = lookup_stress(stress_table, cold_tc) if (stress_table and cold_tc is not None) else None
+        S1 = s_cold["stress_psi"] if s_cold else None
 
     E = joint_efficiency_from_label(joint_type)
     y_at = lookup_y(y_curve, design_temp_c) if design_temp_c is not None else None
@@ -684,7 +756,7 @@ def build_formula_example(
 
     # Eq. 3a per case in inches: t = P·D / [2·(S·E·W + P·Y)]
     t1_in = None
-    if P1_psi is not None and S1 is not None and W is not None:
+    if (not use_design_point_only) and P1_psi is not None and S1 is not None and W is not None:
         t1_in = (P1_psi * D_in) / (2 * (S1 * E * W + P1_psi * Y))
     t2_in = None
     if P2_psi is not None and S2 is not None and W is not None:
@@ -702,6 +774,7 @@ def build_formula_example(
             "mill_tolerance": mill_tol,
             "reason": "Allowable stress unavailable for this material.",
         }
+    # Decide which case governs (when both present, max wins).
     case1_governs = (t1_in is not None) and (t2_in is None or t1_in >= t2_in)
     t_press_in = t1_in if case1_governs else t2_in
     tm_in = t_press_in + C_in
@@ -716,7 +789,9 @@ def build_formula_example(
         "E": E, "W": W, "Y": Y, "Y_label": Y_label,
         "C_mm": C_mm, "C_in": C_in,
         "mill_tolerance": mill_tol,
-        "case_1": {
+        # In design-point-only mode, case_1 is None — the SPA's
+        # `{formula.case_1 && (...)}` guard hides the cold-end row.
+        "case_1": None if use_design_point_only else {
             "label":      f"Min T / Max P @ {cold_label}",
             "P_psig":     P1_psi,
             "S_psi":      S1,

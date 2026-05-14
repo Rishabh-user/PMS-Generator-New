@@ -44,7 +44,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from app.services import class_resolver, wt_calc
+from app.services import class_resolver, pt_lookup, wt_calc
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,69 @@ _FALLBACK_DESIGN_T_C = 50.0
 # curves now extend to 538 / 450 / 400 °C, but defaulting that hot
 # makes the seeded pressure tiny. With this cap, the SPA opens at
 # 300 °C with the curve-interpolated rated pressure at 300 °C.
+#
+# This same value is the "new-spec threshold" — design T above this
+# is considered a customized PMS (single-point WT mode + renamed
+# class code).
 _DEFAULT_SEED_TEMP_CAP_C = 300.0
+
+
+def is_customized_zone(design_t_c: Optional[float]) -> bool:
+    """Single source of truth for 'is this design in the customized
+    (new-spec) zone?'. Both the chat-agent enumerator and the snapshot
+    builder call this so they agree on naming / WT mode."""
+    return design_t_c is not None and float(design_t_c) > _DEFAULT_SEED_TEMP_CAP_C
+
+
+def customized_class_code(base_class_code: Optional[str], design_t_c: Optional[float]) -> Optional[str]:
+    """Apply the new-spec rename to a base class code when in the
+    customized zone. Returns the base unchanged otherwise."""
+    if base_class_code and is_customized_zone(design_t_c):
+        return f"New-spec-[{base_class_code}]"
+    return base_class_code
+
+
+def effective_design_temp(
+    rating: Optional[str],
+    material: Optional[str],
+    design_pressure_barg: Optional[float],
+    design_temp_c: Optional[float],
+) -> Optional[float]:
+    """Mirror of `_seed_defaults`'s T-resolution path. Returns the
+    effective design T the snapshot will use given the caller's inputs.
+
+    Used by callers outside `build_pms_snapshot` (notably the chat
+    agent's adequacy filter + class-code rename) so they agree with
+    the snapshot on what design T is in play:
+
+      • T given        → return T as-is.
+      • only P given   → inverse-interpolate T from the curve at P.
+                         If P exceeds the cold-end max, the helper
+                         clamps to T[0] (cold-end T) — the same as
+                         `interpolate_temperature`.
+      • both null      → cap at min(hottest.T, 300 °C).
+      • no curve / no inputs → None (caller decides what to do).
+    """
+    if design_temp_c is not None:
+        return float(design_temp_c)
+
+    if not rating or not material:
+        return None
+    pt = pt_lookup.find(rating, material)
+    if not pt or pt.get("pending"):
+        return None
+
+    temps = pt.get("temperatures_c") or []
+    pressures = pt.get("pressures_barg") or []
+
+    if design_pressure_barg is not None and temps and pressures:
+        return wt_calc.interpolate_temperature(temps, pressures, design_pressure_barg)
+
+    hottest = pt.get("hottest_point") or {}
+    hot_T = hottest.get("temperature_c")
+    if hot_T is not None:
+        return min(float(hot_T), _DEFAULT_SEED_TEMP_CAP_C)
+    return None
 
 # ── Design-Conditions form schema (drives Section 2 in the SPA) ───
 #
@@ -278,12 +340,45 @@ def build_pms_snapshot(
 
     Returns a dict with the same shape stored in `saved_pms.payload`,
     plus an `effective_design_conditions` block so the SPA knows what
-    defaults were applied when it sent nulls."""
+    defaults were applied when it sent nulls.
+
+    Customization detection:
+      • If the caller-supplied P/T differs from what `_seed_defaults`
+        would produce when both are null → the user has *committed* to
+        a specific operating point.
+      • In that case the WT calc switches to "design-point only" mode
+        (no cold-end-vs-design comparison) and the resolved class_code
+        gets a P/T suffix (e.g. "A1" → "A1-25b-390C"). The base
+        class_code is preserved as `base_class_code` so save/lookup
+        flows can group variants under the standard §5.5 code.
+      • Otherwise (no user input, or values matching defaults) the WT
+        calc runs in envelope mode (Min cold-end + Max @ 300 °C cap)
+        and the class_code stays standard ("A1").
+    """
     resolved = class_resolver.resolve(
         rating=rating, material=material, ca=corrosion_allowance, service=service or "",
     )
     pt = resolved.get("pressure_temperature")
     eff = _seed_defaults(pt, rating, design_pressure_barg, design_temp_c, mdmt_c, joint_type)
+
+    # ── Customization detection (temperature-only rule) ─────────
+    # Operating zone policy — `is_customized_zone` above is the single
+    # source of truth for this rule (used by chat agent and snapshot
+    # builder alike):
+    #   • Design T ≤ 300 °C  → "standard" PMS:
+    #       - envelope WT mode (Min cold-end vs Max @ design — max governs)
+    #       - keeps the base class_code ("A1", "D1", …)
+    #   • Design T > 300 °C  → "new-spec" PMS:
+    #       - single-point WT mode (design point only)
+    #       - class_code renamed to `New-spec-[base]`
+    # Pressure alone never triggers the rename.
+    seeded_t_c = eff.get("design_temp_c")
+    user_customized = is_customized_zone(seeded_t_c)
+
+    base_class_code = resolved.get("class_code")
+    resolved["base_class_code"] = base_class_code
+    if user_customized:
+        resolved["class_code"] = customized_class_code(base_class_code, seeded_t_c)
 
     # Compute every derived block. Best-effort: snapshot survives even
     # when wt_calc raises (e.g. composite material with no B16.5 stress
@@ -297,6 +392,7 @@ def build_pms_snapshot(
             design_temp_c=eff["design_temp_c"],
             joint_type=eff["joint_type"],
             service=service or "",
+            use_design_point_only=user_customized,
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("wt_calc.compute_wall_thickness_rows failed: %s", e)
@@ -330,6 +426,7 @@ def build_pms_snapshot(
             design_temp_c=eff["design_temp_c"],
             joint_type=eff["joint_type"],
             service=service or "",
+            use_design_point_only=user_customized,
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("wt_calc.build_formula_example failed: %s", e)
@@ -360,6 +457,28 @@ def build_pms_snapshot(
         logger.exception("wt_calc.derived_design_conditions failed: %s", e)
         derived_conditions = {}
 
+    # ── WT-calc availability ────────────────────────────────────
+    # Some design points can't be calculated — typically when the
+    # ASME B31.3 Table A-1 stress curve doesn't extend to the design
+    # temperature (CS at 538 °C is the most common case) or when the
+    # W-factor isn't defined for the joint type at that T. When
+    # that happens we don't want to render an empty WT table with
+    # "—" everywhere; the SPA should show a single clear error
+    # block instead. The signal: `wall_thickness.unavailable: true`
+    # plus a one-line reason the SPA can render verbatim.
+    wt_unavailable_reason: Optional[str] = None
+    if isinstance(formula_example, dict) and formula_example.get("available") is False:
+        wt_unavailable_reason = formula_example.get("reason") or (
+            "Wall thickness cannot be computed at this design point."
+        )
+    elif not wt_rows or all(r.get("t_mm") is None for r in wt_rows):
+        wt_unavailable_reason = (
+            "Wall thickness cannot be computed at this design point — "
+            "allowable stress or W-factor is unavailable above the "
+            "ASME B31.3 Table A-1 / 302.3.5 range for this material."
+        )
+    wt_unavailable = wt_unavailable_reason is not None
+
     return {
         # Pass through the entire resolve-class output (class_code,
         # letter, digit, suffix, trailing, service, note,
@@ -386,10 +505,15 @@ def build_pms_snapshot(
         "derived_conditions": derived_conditions,
         # Tab 2
         "wall_thickness": {
-            "rows":            wt_rows,
-            "summary":         wt_summary,
-            "flags":           flags,
-            "formula_example": formula_example,
+            "rows":                wt_rows,
+            "summary":             wt_summary,
+            "flags":               flags,
+            "formula_example":     formula_example,
+            # SPA gates Tab 2's WT table / summary / formula card on this.
+            # When True, the SPA shows a single error block in place of
+            # the empty tables. `unavailable_reason` is the message text.
+            "unavailable":         wt_unavailable,
+            "unavailable_reason":  wt_unavailable_reason,
         },
         # Tab 3 — branch chart already lives in
         # `code_factors.branch_chart` inside the spread-in resolved data.

@@ -42,7 +42,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from app.config import settings
-from app.services import ai_service, class_resolver, pt_lookup
+from app.services import ai_service, class_resolver, pms_snapshot, pt_lookup
 
 
 logger = logging.getLogger(__name__)
@@ -552,14 +552,67 @@ def _rated_pressure_at_temp(pt: Optional[dict], design_t_c: float) -> Optional[f
 _ADEQUACY_TOLERANCE_BARG = 0.05
 
 
+# Standard ASME B16.5 ratings in ascending psi order. Used by the
+# over-spec check to find the smallest rating that fits a design P/T.
+# Non-standard ratings (5000# / 10000# / EEMUA / Tubing) deliberately
+# omitted — those have project-specific rating logic.
+_STANDARD_RATING_ORDER: tuple[str, ...] = (
+    "150#", "300#", "600#", "900#", "1500#", "2500#",
+)
+
+
+def _rating_supports_at_t(
+    rating: str, material: str,
+    design_p_barg: float, design_t_c: float,
+) -> bool:
+    """Pure 'rated@T ≥ design_p' check — no over-spec check. Used by
+    `_natural_rating_for_design_point` to walk the rating ladder."""
+    pt = pt_lookup.find(rating, material)
+    if not pt or pt.get("pending"):
+        return False
+    rated = _rated_pressure_at_temp(pt, design_t_c)
+    if rated is None:
+        return False
+    return rated + _ADEQUACY_TOLERANCE_BARG >= design_p_barg
+
+
+def _natural_rating_for_design_point(
+    material: str, design_p_barg: float, design_t_c: float,
+) -> Optional[str]:
+    """Find the smallest standard rating whose rated P at design_t_c
+    is ≥ design_p_barg. Returns None if even 2500# can't sustain it
+    (P is just too high for any standard class), or if the material
+    isn't indexed in the standard B16.5 ladder."""
+    for rating in _STANDARD_RATING_ORDER:
+        if _rating_supports_at_t(rating, material, design_p_barg, design_t_c):
+            return rating
+    return None
+
+
 def _is_adequate(
     rating: str, material: str,
     design_p_barg: Optional[float], design_t_c: Optional[float],
 ) -> tuple[bool, Optional[str]]:
-    """Returns (adequate, reason_if_not). When design conditions are
-    incomplete (e.g. P given but no T) we conservatively assume the user
-    means design_t_c = hottest indexed point — i.e. the most demanding
-    operating point on the curve."""
+    """Returns (adequate, reason_if_not).
+
+    Adequacy logic — two checks:
+      1. (under-spec) rated@T must be ≥ design_p_barg
+      2. (over-spec) the user's rating must be the *natural* fit —
+         i.e. the smallest standard rating whose rated@T ≥ design_p.
+         If the user pins a much-higher rating, it's reported as
+         "not appropriate" per ASME B16.5 design practice — engineers
+         don't normally over-spec a flange class beyond what the
+         design pressure needs.
+
+    Special cases:
+      • design_p_barg is None        → no pressure constraint, adequate.
+      • design_t_c is None           → inferred via
+        `pms_snapshot.effective_design_temp` (inverse interp from P
+        on the curve), so the chat-agent filter agrees with what
+        the snapshot will compute.
+      • Non-standard rating (5000# / 10000# / EEMUA / Tubing) → skip
+        the over-spec check (they use project-specific rating logic).
+    """
     if design_p_barg is None:
         return True, None  # No constraint to check.
 
@@ -570,13 +623,10 @@ def _is_adequate(
         # verify the class meets them — reject rather than mislead.
         return False, "no ASME B16.5 P-T curve indexed for this material"
 
-    t_c = design_t_c
+    # Use the same effective T the snapshot will compute. When the user
+    # supplied only P, this inverse-interpolates T from the P-T curve.
+    t_c = pms_snapshot.effective_design_temp(rating, material, design_p_barg, design_t_c)
     if t_c is None:
-        hp = pt.get("hottest_point") or {}
-        t_c = hp.get("temperature_c")
-    if t_c is None:
-        # Design P given but the catalog has no temperature axis to
-        # check against — also reject.
         return False, "no P-T temperature axis to verify against"
 
     rated = _rated_pressure_at_temp(pt, t_c)
@@ -586,10 +636,28 @@ def _is_adequate(
             f"design T {t_c}°C is above the indexed P-T envelope "
             f"(max {max(pt.get('temperatures_c') or [None])}°C)"
         )
+
+    # Check 1 — under-spec (rated < design): class can't sustain the pressure.
     if rated + _ADEQUACY_TOLERANCE_BARG < design_p_barg:
         return False, (
-            f"rated {rated:.1f} barg at {t_c}°C < design {design_p_barg:.1f} barg"
+            f"rated {rated:.1f} barg at {t_c:.0f}°C < design {design_p_barg:.1f} barg"
         )
+
+    # Check 2 — over-spec: user's rating exceeds the natural fit.
+    # Only applies to standard B16.5 ratings.
+    if rating in _STANDARD_RATING_ORDER:
+        natural = _natural_rating_for_design_point(material, design_p_barg, t_c)
+        if natural and natural != rating:
+            natural_rated = _rated_pressure_at_temp(
+                pt_lookup.find(natural, material) or {}, t_c,
+            )
+            return False, (
+                f"over-spec for {design_p_barg:.1f} barg @ {t_c:.0f}°C — per "
+                f"ASME B16.5, class {natural} is the natural fit "
+                f"(rated {natural_rated:.1f} barg at this T). "
+                f"Class {rating} would be heavily over-specified."
+            )
+
     return True, None
 
 
@@ -641,8 +709,20 @@ def _enumerate(
                         inadequate_count += 1
                         continue
 
+                # Apply the same customized-zone rename the snapshot
+                # builder uses, so the chat match card shows the same
+                # class code the InlinePMSPreview will. The "effective
+                # T" call mirrors `_seed_defaults` — when the user
+                # supplied only P, this inverse-interpolates T from
+                # the curve, so a P that lands in the high-T region
+                # (e.g. 5.5 barg @ ~425 °C on CS 150#) still triggers
+                # the rename correctly.
+                base = resolved["class_code"]
+                effective_t = pms_snapshot.effective_design_temp(r, m, design_p_barg, design_t_c)
+                display_code = pms_snapshot.customized_class_code(base, effective_t)
                 out.append({
-                    "piping_class":        resolved["class_code"],
+                    "piping_class":        display_code,
+                    "base_class_code":     base,
                     "rating":              r,
                     "material":            m,
                     "corrosion_allowance": ca,
@@ -679,6 +759,93 @@ def _next_missing_slot(canonical_ratings, canonical_materials, canonical_cas, ca
     return None
 
 
+_TECH_REVIEW_NOTE = (
+    "📝 **Note:** Please consult a technical engineer for this PMS — a "
+    "non-standard solution (compact flange / hub connector / custom class) "
+    "or a different rating-class may be required."
+)
+
+# Appended to the chat reply when matches exist but the design point sits
+# in a "borderline" region (material-specific creep zone, very close to
+# the curve's published max, etc.). The class is technically adequate but
+# we want the engineer to do a human review before signing off.
+_BORDERLINE_NOTE_TEMPLATE = (
+    "⚠️ **We don't have a standard PMS for this P-T requirement** — {reason}. "
+    "The class above is technically adequate per ASME B16.5, but the design "
+    "point is at the edge of standard service.\n\n"
+    "📝 **Note:** Please consult a technical engineer once and confirm this "
+    "PMS is suitable for sustained operation before issuing the report."
+)
+
+
+def _fmt_pt_target(design_p_barg: Optional[float], design_t_c: Optional[float]) -> str:
+    """Human-readable P/T target string for replies, e.g. '25 barg @ 390°C'."""
+    parts: list[str] = []
+    if design_p_barg is not None:
+        parts.append(f"{design_p_barg:g} barg")
+    if design_t_c is not None:
+        parts.append(f"{design_t_c:g}°C")
+    return " @ ".join(parts) if parts else "the requested design point"
+
+
+def _design_caution_reason(
+    matches: list[dict],
+    design_t_c: Optional[float],
+) -> Optional[str]:
+    """Return a one-clause reason string if the matched class(es) and
+    user-supplied design T fall into a "borderline" engineering zone
+    that warrants a technical-engineer review. Returns None when the
+    design point is comfortably inside standard service.
+
+    Rules in priority order (first match wins):
+      • Any design T above the standard envelope cap (300 °C) →
+        "new-spec" zone — the PMS is renamed and the WT calc switches
+        to single-point mode. Engineer should review before issuing.
+      • Plain CS / LTCS at T > 370 °C → creep / graphitization
+        (B31.3 creep onset for CS; B16.5 Note (1) caps prolonged use
+        at 425 °C). This is a stricter sub-case of the above.
+      • Any material at T within 10 °C of its catalogued max →
+        at the very edge of the published P-T envelope.
+    """
+    if not matches or design_t_c is None:
+        return None
+
+    # Strictest first: CS / LTCS in their creep / graphitization band.
+    for m in matches:
+        mat = m.get("material") or ""
+        if re.search(r"^\s*(?:CS|LTCS)\s*(?:NACE)?\s*$", mat, re.I) and design_t_c > 370:
+            return (
+                "carbon steel above 370 °C enters the creep and "
+                "graphitization zone (ASME B16.5 Note 1 caps prolonged "
+                "use at 425 °C)"
+            )
+
+    # New-spec zone: any material above the 300 °C envelope cap.
+    if pms_snapshot.is_customized_zone(design_t_c):
+        return (
+            f"design T = {design_t_c:g} °C is outside the standard "
+            "0–300 °C envelope — this is a customized (new-spec) PMS"
+        )
+
+    # Generic "edge of published curve" check.
+    for m in matches:
+        pt = pt_lookup.find(m.get("rating") or "", m.get("material") or "")
+        if not pt or pt.get("pending"):
+            continue
+        temps = pt.get("temperatures_c") or []
+        if not temps:
+            continue
+        curve_max = max(temps)
+        if design_t_c >= curve_max - 10:
+            return (
+                f"design T = {design_t_c:g} °C is within 10 °C of the "
+                f"catalogued curve maximum ({curve_max:g} °C) — rated "
+                f"pressure derates sharply at this end"
+            )
+
+    return None
+
+
 def _default_reply(
     matches: list[dict],
     field_suggestions: list[dict],
@@ -686,6 +853,8 @@ def _default_reply(
     inadequate_count: int = 0,
     design_p_barg: Optional[float] = None,
     design_t_c: Optional[float] = None,
+    user_rating: Optional[str] = None,
+    user_material: Optional[str] = None,
 ) -> str:
     if field_suggestions:
         f = field_suggestions[0]
@@ -703,17 +872,99 @@ def _default_reply(
             "Tell me what PMS you need — Rating, Material, Corrosion "
             "Allowance, and Service all help me narrow down."
         )
+
+    # Whether the user pinned both pressure AND temperature. The system
+    # message is more explicit when both are given because we can name
+    # the exact point we evaluated against.
+    user_gave_pt = design_p_barg is not None and design_t_c is not None
+    pt_target = _fmt_pt_target(design_p_barg, design_t_c)
+
     if not matches:
         # No matches AND the user gave design conditions → explain why.
+        # Three distinct sub-cases to disambiguate:
+        #   (a) user pinned a rating and that rating is OVER-SPEC for
+        #       the design P at design T (per ASME B16.5 standard) →
+        #       suggest the natural rating with rated@T cited.
+        #   (b) user pinned a rating that is UNDER-SPEC (can't sustain
+        #       the pressure) → tell them no class fits.
+        #   (c) no rating pinned and adequacy filter wiped everything →
+        #       generic "no PMS in catalogue" message.
         if design_p_barg is not None and inadequate_count > 0:
-            dt = f"{design_t_c:g}°C" if design_t_c is not None else "the requested design T"
+            # Case (a) — user pinned a rating that doesn't match the
+            # standard fit per ASME B16.5. Distinguish two sub-cases
+            # by comparing ladder positions:
+            #   • user_rating > natural → OVER-spec  (rated >> design)
+            #   • user_rating < natural → UNDER-spec (rated < design)
+            # The wording differs ("far above" vs "below") and the
+            # over-vs-under hint guides the engineer to the correct
+            # standard class.
+            if (
+                user_rating
+                and user_material
+                and design_t_c is not None
+                and user_rating in _STANDARD_RATING_ORDER
+            ):
+                natural = _natural_rating_for_design_point(
+                    user_material, design_p_barg, design_t_c,
+                )
+                if natural and natural != user_rating:
+                    natural_pt = pt_lookup.find(natural, user_material) or {}
+                    natural_rated = _rated_pressure_at_temp(natural_pt, design_t_c)
+                    user_pt = pt_lookup.find(user_rating, user_material) or {}
+                    user_rated = _rated_pressure_at_temp(user_pt, design_t_c)
+                    user_idx = _STANDARD_RATING_ORDER.index(user_rating)
+                    natural_idx = _STANDARD_RATING_ORDER.index(natural)
+                    is_over_spec = user_idx > natural_idx
+                    relation = "far above" if is_over_spec else "below"
+                    rated_phrase = (
+                        f"rated {user_rated:.1f} barg at {design_t_c:g}°C, "
+                        f"{relation} your design pressure"
+                        if user_rated is not None
+                        else f"{relation} your design at {design_t_c:g}°C"
+                    )
+                    natural_phrase = (
+                        f"rated {natural_rated:.1f} barg at the same temperature"
+                        if natural_rated is not None
+                        else "the standard fit"
+                    )
+                    note_intro = (
+                        "Picking a heavily over-specified rating"
+                        if is_over_spec
+                        else "Picking a rating that can't sustain your "
+                             "design pressure"
+                    )
+                    return (
+                        f"❌ **{design_p_barg:g} barg @ {design_t_c:g}°C is "
+                        f"not an appropriate design point for class "
+                        f"{user_rating}** — per ASME B16.5, class {user_rating} "
+                        f"is {rated_phrase}.\n\n"
+                        f"The standard fit for {pt_target} is class "
+                        f"**{natural}** ({natural_phrase}). Re-issue the "
+                        f"request with class {natural} and I'll generate "
+                        f"that PMS.\n\n"
+                        f"📝 **Note:** {note_intro} is non-standard and not "
+                        f"generated automatically. If you specifically need "
+                        f"class {user_rating} for non-P/T reasons, please "
+                        f"consult a technical engineer."
+                    )
+
+            # Case (b) / (c) — generic "rated < design" or no-class-fits.
+            if inadequate_count == 1:
+                short_sentence = (
+                    "The matched class falls short of that design point on "
+                    "its ASME B16.5 P-T curve"
+                )
+            else:
+                short_sentence = (
+                    f"All {inadequate_count} candidate classes fall short of "
+                    "that design point on their ASME B16.5 P-T curve"
+                )
             return (
-                f"⚠️ **No class in the catalogue can sustain "
-                f"{design_p_barg:g} barg at {dt}.** "
-                f"All {inadequate_count} candidate classes fall short of that "
-                "design point on their ASME B16.5 P-T curve. Lower the design "
-                "pressure or temperature, or check whether a non-flange "
-                "solution (e.g. compact flange / hub connector) is required."
+                f"❌ **We don't have any PMS for this P-T requirement** "
+                f"({pt_target}).\n\n"
+                f"{short_sentence} (evaluated at the temperature you "
+                f"supplied, not the cold-end of the curve).\n\n"
+                f"{_TECH_REVIEW_NOTE}"
             )
         if design_t_c is not None and design_p_barg is None:
             return (
@@ -725,12 +976,28 @@ def _default_reply(
             "No piping class in the catalogue matches those filters. "
             "Try a different combination."
         )
+
+    # Match(es) found — when the user pinned a P/T point, confirm we
+    # checked adequacy at THAT point so they know the recommendation
+    # isn't a generic one.
     if len(matches) == 1:
         m = matches[0]
-        return (
+        base = (
             f"Resolved class **{m['piping_class']}** — "
-            f"{m['rating']} · {m['material']} · CA {m['corrosion_allowance']}. "
-            "Click Download Excel to grab the PMS."
+            f"{m['rating']} · {m['material']} · CA {m['corrosion_allowance']}."
+        )
+        if user_gave_pt:
+            return (
+                f"{base} ✓ Verified adequate at your design point "
+                f"({pt_target}). Click Download Excel to grab the PMS."
+            )
+        return f"{base} Click Download Excel to grab the PMS."
+
+    if user_gave_pt:
+        return (
+            f"Here are **{len(matches)} matching classes** — all verified "
+            f"adequate at your design point ({pt_target}). "
+            "Pick one or select several and download as ZIP."
         )
     return (
         f"Here are **{len(matches)} matching classes**. "
@@ -895,6 +1162,8 @@ def chat(prompt: str, history: list[dict]) -> dict:
             inadequate_count=inadequate_count,
             design_p_barg=extracted["design_pressure_barg"],
             design_t_c=extracted["design_temp_c"],
+            user_rating=rating,
+            user_material=material,
         )
     else:
         reply = extracted["reply"] or _default_reply(
@@ -902,7 +1171,29 @@ def chat(prompt: str, history: list[dict]) -> dict:
             inadequate_count=inadequate_count,
             design_p_barg=extracted["design_pressure_barg"],
             design_t_c=extracted["design_temp_c"],
+            user_rating=rating,
+            user_material=material,
         )
+
+    # When the chat agent found a match but the design point is at the
+    # edge of standard service (e.g. CS at 400°C, in the creep zone), we
+    # append a borderline warning. The class IS adequate, but a human
+    # engineer should sign off before the PMS is issued. This fires
+    # whether the reply came from Claude or _default_reply, so the
+    # warning is always visible.
+    if matched_classes:
+        # Use the effective T the snapshot will see — when the user
+        # supplied only P, this inverse-interpolates from the curve
+        # so the caution checks the *real* design T (e.g. P=5.5 barg
+        # on CS 150# → effective T ≈ 425 °C → fires the creep caution).
+        m0 = matched_classes[0]
+        effective_t = pms_snapshot.effective_design_temp(
+            m0.get("rating"), m0.get("material"),
+            extracted["design_pressure_barg"], extracted["design_temp_c"],
+        )
+        caution_reason = _design_caution_reason(matched_classes, effective_t)
+        if caution_reason:
+            reply = f"{reply}\n\n{_BORDERLINE_NOTE_TEMPLATE.format(reason=caution_reason)}"
 
     return {
         "reply": reply,
