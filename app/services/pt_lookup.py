@@ -25,6 +25,17 @@ from typing import Optional
 from app.config import settings
 
 
+# Cap the on-screen "Pressure-Temperature Rating" table at this T.
+# Our ASME B16.5 Group 1.1 / 2.3 / 2.8 entries extend to 538 / 450 /
+# 400 °C, but the SPA / page only shows up to here so the table reads
+# at typical operating range. The FULL curve stays in
+# `pressure_temperature.temperatures_c` etc. — only the additional
+# `pressure_temperature.display_columns` view is filtered. Interpolation,
+# adequacy, WT calc, and the SPA's two-way curve sync all still walk
+# the full curve.
+PT_TABLE_DISPLAY_CAP_C = 300.0
+
+
 @lru_cache(maxsize=1)
 def _data() -> dict:
     return json.loads((settings.data_dir / "pt_tables.json").read_text(encoding="utf-8"))
@@ -97,6 +108,14 @@ def find(rating: str, material: str) -> Optional[dict]:
             cold_idx = pressures.index(max(pressures)) if pressures else None
             hot_idx  = temps.index(max(temps)) if temps else None
 
+            # Pre-filtered columns for the SPA / page's P-T Rating table.
+            # Backend decides what's visible; the SPA just renders this
+            # subset and doesn't carry any cap value of its own.
+            visible_idxs = [i for i, t in enumerate(temps) if t <= PT_TABLE_DISPLAY_CAP_C]
+            display_temps    = [temps[i]     for i in visible_idxs]
+            display_pressures = [pressures[i] for i in visible_idxs]
+            display_labels   = [labels[i]    for i in visible_idxs] if labels else []
+
             return {
                 "group":           group_id,
                 "temperatures_c":  temps,
@@ -113,6 +132,16 @@ def find(rating: str, material: str) -> Optional[dict]:
                     {"pressure_barg": pressures[hot_idx], "temperature_c": temps[hot_idx]}
                     if hot_idx is not None else None
                 ),
+                # On-screen P-T Rating table reads these (cap = 300 °C).
+                # The full curve in `temperatures_c` / `pressures_barg`
+                # above is still used for adequacy + interpolation +
+                # WT calc, regardless of what we display here.
+                "display_columns": {
+                    "temperatures_c": display_temps,
+                    "pressures_barg": display_pressures,
+                    "temp_labels":    display_labels,
+                    "cap_c":          PT_TABLE_DISPLAY_CAP_C,
+                },
             }
 
     return None

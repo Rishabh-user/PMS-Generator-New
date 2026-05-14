@@ -320,20 +320,44 @@ function populateStandardBar(state) {
     bar.innerHTML = `<strong>Standard:</strong> ASME B16.5 &nbsp;|&nbsp; <strong>Group:</strong> ${escapeHtml(state.pt.group)} &nbsp;|&nbsp; <strong>Class:</strong> ${escapeHtml(state.rating)} &nbsp;|&nbsp; <strong>Material:</strong> ${escapeHtml(cleanMaterial(state.material))}`;
 }
 
+// Cap the on-screen P-T Rating table at this temperature. The
+// underlying curve in `state.pt` still extends to the full ASME B16.5
+// published max (538 / 450 / 400 °C for Groups 1.1 / 2.3 / 2.8) and
+// drives interpolation, adequacy, WT calc, and the °F footnote — only
+// the visible columns are capped, so the page reads at typical
+// operating range without overwhelming the user with high-T entries.
+const PT_TABLE_DISPLAY_CAP_C = 300;
+
 function populatePtTable(state, designTc) {
     const tbl = document.getElementById('rPtTable');
     if (!state.pt || !state.pt.temperatures_c || !state.pt.pressures_barg) {
         tbl.innerHTML = `<tbody><tr><td style="padding:24px;text-align:center;color:var(--text-muted)">No P-T data indexed for this combination.</td></tr></tbody>`;
         return;
     }
-    const temps  = state.pt.temperatures_c;
-    const press  = state.pt.pressures_barg;
-    const labels = state.pt.temp_labels || temps.map(String);
+    const fullTemps  = state.pt.temperatures_c;
+    const fullPress  = state.pt.pressures_barg;
+    const fullLabels = state.pt.temp_labels || fullTemps.map(String);
+
+    // Filter to columns at or below the display cap. The cold-end
+    // column (e.g. T=38 for the "-29 to 38" label) is always included
+    // because 38 ≤ 300. Drop only the high-T columns.
+    const temps  = [];
+    const press  = [];
+    const labels = [];
+    for (let i = 0; i < fullTemps.length; i++) {
+        if (fullTemps[i] <= PT_TABLE_DISPLAY_CAP_C) {
+            temps.push(fullTemps[i]);
+            press.push(fullPress[i]);
+            labels.push(fullLabels[i]);
+        }
+    }
 
     // Locate the column whose stored temperature equals the design T (exact
     // match only — interpolation is shown in the derived box, not the table).
     const highlightIdx = temps.findIndex(t => Number(t) === Number(designTc));
 
+    // Hydrotest is always 1.5 × the curve's overall max P (cold-end),
+    // which is still inside the visible columns since cold-end ≤ 300 °C.
     const maxRatedP = Math.max(...press);
     const hydroP    = maxRatedP * REPORT_CONST.hydrotestFactor;
 
@@ -2692,24 +2716,41 @@ function populateAdequacy(state, designPbarg, designTc) {
         : `&#10005; Class ${escapeHtml(state.rating)} is <strong>INADEQUATE</strong>: rating ${fmt(ratedAtDesignT, 1)} barg &lt; Design ${fmt(designPbarg, 1)} barg at ${fmt(designTc, 0)}&deg;C`;
 }
 
-// Two-way sync between barg and psig fields, plus °F display under temp inputs.
+// Live recompute on Design P / T / Joint Type edits. The psig and MDMT
+// inputs were removed per project request — psig is shown read-only in
+// the Derived Conditions panel and MDMT stays at the project default
+// (-29 °C) which is still carried through to the saved snapshot.
+const _DEFAULT_MDMT_C = -29;
+
 function wireReportInputs(state) {
     const pBarg = document.getElementById('rDesignPressure');
-    const pPsig = document.getElementById('rDesignPressurePsig');
     const tC    = document.getElementById('rDesignTemperature');
     const tF    = document.getElementById('rTempFahrenheit');
-    const mdmt  = document.getElementById('rMdmt');
-    const mdmtF = document.getElementById('rMdmtFahrenheit');
     const joint = document.getElementById('rJointType');
     const jointRef = document.getElementById('rJointRef');
 
+    // P-T curve data for two-way auto-sync between the Design P and
+    // Design T inputs. Setting `element.value` from JS does NOT refire
+    // the `input` event in the browser, so no infinite loop — but we
+    // still gate with `syncing` defensively.
+    const temps     = (state.pt && state.pt.temperatures_c) || [];
+    const pressures = (state.pt && state.pt.pressures_barg) || [];
+    const hasCurve = temps.length > 0 && pressures.length > 0;
     let syncing = false;
+
+    // Format a pressure number for the input box — 1 decimal for whole
+    // values (10.2 not 10.20), 2 decimals otherwise so 14.46 doesn't
+    // round to 14.5 (which can falsely flag the next rating as inadequate).
+    const fmtPressure = (p) =>
+        (Math.abs(p * 10 - Math.round(p * 10)) < 1e-6) ? p.toFixed(1) : p.toFixed(2);
+    const fmtTemp = (t) =>
+        Number.isInteger(t) ? String(t) : t.toFixed(1);
+
     const refresh = () => {
         const dp = parseFloat(pBarg.value) || 0;
         const dt = parseFloat(tC.value) || 0;
-        const md = parseFloat(mdmt.value) || 0;
-        tF.textContent    = `= ${fmt(cToF(dt), 1)} °F`;
-        mdmtF.textContent = `= ${fmt(cToF(md), 1)} °F`;
+        const md = _DEFAULT_MDMT_C;
+        tF.textContent = `= ${fmt(cToF(dt), 1)} °F`;
         const E = jointEfficiencyFromLabel(joint.value);
         jointRef.textContent = `ASME B31.3 Table A-1B  —  E = ${E.toFixed(2)}`;
 
@@ -2730,18 +2771,43 @@ function wireReportInputs(state) {
         renderDatasheetTab(state, dp, dt);
     };
 
-    pBarg.addEventListener('input', () => {
-        if (syncing) return; syncing = true;
-        pPsig.value = (parseFloat(pBarg.value) * REPORT_CONST.bargToPsig || 0).toFixed(1);
-        syncing = false; refresh();
-    });
-    pPsig.addEventListener('input', () => {
-        if (syncing) return; syncing = true;
-        pBarg.value = (parseFloat(pPsig.value) * REPORT_CONST.psigToBarg || 0).toFixed(2);
-        syncing = false; refresh();
-    });
-    [tC, mdmt, joint].forEach(el => el.addEventListener('input', refresh));
+    // ── Two-way auto-sync between Design P and Design T ───────────────
+    // When the engineer edits Design T (°C), interpolate the curve's
+    // rated P at that T and write it into Design P (barg). When they
+    // edit Design P (barg), inverse-interpolate the T at which the
+    // curve hits that P and write it into Design T (°C). Both writes
+    // are silent (setting `.value` doesn't fire input), and we still
+    // gate with `syncing` to be safe.
 
+    tC.addEventListener('input', () => {
+        if (syncing || !hasCurve) { refresh(); return; }
+        const t = parseFloat(tC.value);
+        if (Number.isFinite(t)) {
+            const p = interpolatePressure(temps, pressures, t);
+            if (p != null) {
+                syncing = true;
+                pBarg.value = fmtPressure(p);
+                syncing = false;
+            }
+        }
+        refresh();
+    });
+
+    pBarg.addEventListener('input', () => {
+        if (syncing || !hasCurve) { refresh(); return; }
+        const p = parseFloat(pBarg.value);
+        if (Number.isFinite(p)) {
+            const t = interpolateTemperature(temps, pressures, p);
+            if (t != null) {
+                syncing = true;
+                tC.value = fmtTemp(t);
+                syncing = false;
+            }
+        }
+        refresh();
+    });
+
+    joint.addEventListener('input', refresh);
     refresh();
 }
 
@@ -2776,10 +2842,8 @@ function showReport(state) {
     // Use 2 dp for pressure so the auto-fill doesn't round 14.46 → 14.5,
     // which would then exceed the rating and falsely flag INADEQUATE.
     const pIn = document.getElementById('rDesignPressure');
-    const pPsig = document.getElementById('rDesignPressurePsig');
     const tIn = document.getElementById('rDesignTemperature');
     if (pIn && !pIn.value) pIn.value = fmt(state.designP, 2);
-    if (pPsig && !pPsig.value) pPsig.value = fmt(bargToPsig(state.designP), 1);
     if (tIn && !tIn.value) tIn.value = fmt(state.designT, 0);
 
     populateBanner(state);
@@ -2846,7 +2910,10 @@ function wireForm() {
             }
             const dp = parseFloat(document.getElementById('rDesignPressure')?.value);
             const dt = parseFloat(document.getElementById('rDesignTemperature')?.value);
-            const md = parseFloat(document.getElementById('rMdmt')?.value);
+            // MDMT input was removed from the form — always send the
+            // project default. The saved-PMS payload + Excel still carry
+            // the field; to override per-class, extend the form here.
+            const md = _DEFAULT_MDMT_C;
             const joint = document.getElementById('rJointType')?.value || 'Seamless';
 
             const rating = document.getElementById('pipingClass').value.trim();
@@ -2865,7 +2932,7 @@ function wireForm() {
                     body: JSON.stringify({
                         rating, material, ca, service,
                         design_p_barg: dp, design_t_c: dt,
-                        mdmt_c: Number.isNaN(md) ? -29 : md,
+                        mdmt_c: md,
                         joint_type: joint,
                     }),
                 });
@@ -2974,6 +3041,30 @@ function interpolatePressure(temps, pressures, targetT) {
         }
     }
     return pressures[pressures.length - 1];
+}
+
+// Inverse of interpolatePressure — given a target rating pressure, return
+// the temperature at which the curve hits that pressure. ASME B16.5 P-T
+// curves are monotonically non-increasing (P drops with T), so:
+//   • target ≥ cold-end P → clamp to T[0]  (any P above max rating just
+//     means "use the cold-end design point")
+//   • target ≤ hot-end P  → clamp to T[last]  (engineer can run all the
+//     way to the hottest indexed temperature)
+//   • flat segment        → pick the hot end of that flat region
+//                            (most lenient T that still meets the rating)
+function interpolateTemperature(temps, pressures, targetP) {
+    if (!temps.length || !pressures.length) return null;
+    if (targetP >= pressures[0]) return temps[0];
+    if (targetP <= pressures[pressures.length - 1]) return temps[temps.length - 1];
+    for (let i = 0; i < pressures.length - 1; i++) {
+        const p1 = pressures[i], p2 = pressures[i + 1];
+        if (p1 >= targetP && targetP >= p2) {
+            if (p1 === p2) return temps[i + 1];   // flat — hot end of segment
+            const t1 = temps[i], t2 = temps[i + 1];
+            return t1 + (t2 - t1) * (p1 - targetP) / (p1 - p2);
+        }
+    }
+    return temps[temps.length - 1];
 }
 
 function renderDesignConditions(pt) {
@@ -3120,10 +3211,29 @@ function renderResolution(panel, data, inputs) {
     }
 
     // Seed design-conditions defaults so showReport() can pre-fill if empty.
-    // Cold-rated point is the safest starting design pressure.
+    //
+    // Policy: default Design T = `min(hottest_point.T, 300 °C)` and
+    // Design P = curve-interpolated rated P at that capped T. The
+    // ASME B16.5 Group 1.1 / 2.3 / 2.8 curves now extend to 538 /
+    // 450 / 400 °C, but defaulting that hot pulls rated P way down.
+    // Capping at 300 °C keeps the seeded operating point near typical
+    // process conditions; the engineer can still type any T up to the
+    // curve's published max and the rest of the page recomputes.
     const pt = data.pressure_temperature || {};
-    const coldP = (pt.cold_point && pt.cold_point.pressure_barg) || (pt.pressures_barg || [0])[0] || 0;
-    const designT = (pt.temperatures_c || [38])[0] || 38;
+    const _temps     = pt.temperatures_c || [];
+    const _pressures = pt.pressures_barg || [];
+    const _hotT = (pt.hottest_point && pt.hottest_point.temperature_c);
+    const SEED_TEMP_CAP_C = 300;
+
+    let designT, designP;
+    if (typeof _hotT === 'number' && _temps.length && _pressures.length) {
+        designT = Math.min(_hotT, SEED_TEMP_CAP_C);
+        designP = interpolatePressure(_temps, _pressures, designT);
+    } else {
+        // No P-T curve (e.g. CuNi 150#) → fall back to cold-end P and 38 °C.
+        designP = (pt.cold_point && pt.cold_point.pressure_barg) || (_pressures[0]) || 0;
+        designT = (_temps[0]) || 38;
+    }
 
     const state = {
         rating:      inputs.rating,
@@ -3133,7 +3243,7 @@ function renderResolution(panel, data, inputs) {
         classCode:   data.class_code,
         pt:          data.pressure_temperature,
         codeFactors: data.code_factors || null,
-        designP:     coldP,
+        designP:     designP,
         designT:     designT,
     };
     // Cache for the Excel-download handler and any re-render.

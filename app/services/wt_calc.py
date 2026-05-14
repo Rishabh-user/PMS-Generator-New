@@ -152,6 +152,34 @@ def interpolate_pressure(temps: list[float], pressures: list[float], target_t: f
     return float(pressures[-1])
 
 
+def interpolate_temperature(temps: list[float], pressures: list[float], target_p: float) -> Optional[float]:
+    """Inverse of `interpolate_pressure` — given a target rating pressure,
+    return the temperature at which the curve hits that pressure.
+
+    ASME B16.5 P-T curves are monotonically non-increasing in T:
+      • target_p ≥ cold-end P → clamp to T[0]   (user-typed P exceeds
+        what the class can deliver → cold-end is the relevant point)
+      • target_p ≤ hot-end P  → clamp to T[last] (engineer can run all
+        the way to the hottest indexed temperature)
+      • flat segment          → pick the hot end of that flat region
+        (most lenient T that still meets the rating, e.g. for GRE)
+    """
+    if not temps or not pressures:
+        return None
+    if target_p >= pressures[0]:
+        return float(temps[0])
+    if target_p <= pressures[-1]:
+        return float(temps[-1])
+    for i in range(len(pressures) - 1):
+        p1, p2 = pressures[i], pressures[i + 1]
+        if p1 >= target_p >= p2:
+            if p1 == p2:
+                return float(temps[i + 1])
+            t1, t2 = temps[i], temps[i + 1]
+            return t1 + (t2 - t1) * (p1 - target_p) / (p1 - p2)
+    return float(temps[-1])
+
+
 # ── NPS + pipe-dimension loaders (cached) ──────────────────────────
 
 _GRE_PATTERN = re.compile(r"(?i)\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced")

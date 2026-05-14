@@ -83,26 +83,19 @@
                     <span>Design Conditions</span>
                 </div>
                 <div class="sidebar-form">
+                    <!-- Only the two engineer-editable inputs. psig is
+                         shown in the Derived Conditions panel (read-only)
+                         and MDMT uses the project default -29 °C carried
+                         in the saved-PMS payload + Excel. -->
                     <div class="form-row-2">
                         <div class="form-group">
                             <label for="rDesignPressure">Design P (barg) *</label>
                             <input type="number" id="rDesignPressure" step="0.1">
                         </div>
                         <div class="form-group">
-                            <label for="rDesignPressurePsig">Design P (psig)</label>
-                            <input type="number" id="rDesignPressurePsig" step="1">
-                        </div>
-                    </div>
-                    <div class="form-row-2">
-                        <div class="form-group">
                             <label for="rDesignTemperature">Design T (°C) *</label>
                             <input type="number" id="rDesignTemperature" step="1">
                             <span class="hint" id="rTempFahrenheit"></span>
-                        </div>
-                        <div class="form-group">
-                            <label for="rMdmt">MDMT (°C)</label>
-                            <input type="number" id="rMdmt" step="1" value="-29">
-                            <span class="hint" id="rMdmtFahrenheit"></span>
                         </div>
                     </div>
                     <div class="form-group">
@@ -400,6 +393,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=57"></script>
+    <script src="/static/js/app.js?v=60"></script>
 </body>
 </html>
