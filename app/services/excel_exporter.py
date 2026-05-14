@@ -27,6 +27,7 @@ from app.services import (
     class_resolver,
     fitting_specs,
     flange_specs,
+    pms_snapshot,
     pt_lookup,
     stress_lookup,
     y_lookup,
@@ -73,48 +74,25 @@ RIGHT        = Alignment(horizontal="right",  vertical="center", wrap_text=True)
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Helpers
+# Helpers — only the ones the section builders still call directly.
+# Every WT-calc / schedule-pick / stress-Y interpolation helper that
+# used to live here was deleted when build_workbook() switched to
+# `pms_snapshot.build_pms_snapshot()`. The single source of truth for
+# those formulas is now `app/services/wt_calc.py`. Any new helper
+# added here must be a pure formatting / layout concern.
 # ──────────────────────────────────────────────────────────────────────
-def _bargToPsig(b: float) -> float:
-    return b * 14.5038
-
 
 def _cToF(c: float) -> float:
     return c * 9 / 5 + 32
-
-
-def _parse_ca_mm(ca: str) -> float:
-    if not ca:
-        return 0.0
-    if re.match(r"^\s*NIL\s*$", ca, re.I):
-        return 0.0
-    m = re.search(r"(\d+(?:\.\d+)?)", ca)
-    return float(m.group(1)) if m else 0.0
-
-
-def _interp(by_temp_c: dict, target_c: float) -> Optional[float]:
-    """Linear interp matching the JS lookupStress / lookupY behaviour."""
-    if not by_temp_c:
-        return None
-    keys = sorted(int(k) for k in by_temp_c.keys())
-    if target_c <= keys[0]:
-        return float(by_temp_c[str(keys[0])])
-    if target_c >= keys[-1]:
-        return float(by_temp_c[str(keys[-1])])
-    for i in range(len(keys) - 1):
-        t1, t2 = keys[i], keys[i + 1]
-        if t1 <= target_c <= t2:
-            v1, v2 = float(by_temp_c[str(t1)]), float(by_temp_c[str(t2)])
-            frac = (target_c - t1) / (t2 - t1)
-            return v1 + frac * (v2 - v1)
-    return float(by_temp_c[str(keys[-1])])
 
 
 def _load_json(name: str) -> dict:
     return json.loads((settings.data_dir / name).read_text(encoding="utf-8"))
 
 
-# NPS list — material-aware and (for GRE) service-aware.
+# NPS list — material-aware and (for GRE) service-aware. Still used by
+# the per-material pipe-data sections (small/large bore enumeration)
+# and the tubing sub-builders; intentionally kept here.
 def _nps_rows(material: Optional[str] = None, service: Optional[str] = None) -> list[dict]:
     fname = "nps_dimensions.json"
     if material:
@@ -135,84 +113,6 @@ def _nps_rows(material: Optional[str] = None, service: Optional[str] = None) -> 
         elif re.search(r"Tubing|N08367|6\s*MO", material, re.I):
             fname = "nps_dimensions_tubing.json"
     return _load_json(fname)["rows"]
-
-
-def _b3610_rows() -> dict[float, list[dict]]:
-    data = _load_json("pipe_dimensions_b3610.json")
-    by_nps: dict[float, list[dict]] = {}
-    for r in data.get("rows", []):
-        if r.get("schedule") is None and r.get("identification") is None:
-            continue
-        by_nps.setdefault(r["nps_decimal"], []).append(r)
-    for k in by_nps:
-        by_nps[k].sort(key=lambda r: r["wt_mm"])
-    return by_nps
-
-
-def _b3619_rows() -> dict[float, list[dict]]:
-    try:
-        data = _load_json("pipe_dimensions_b3619.json")
-    except FileNotFoundError:
-        return {}
-    by_nps: dict[float, list[dict]] = {}
-    for r in data.get("rows", []):
-        if r.get("wt_mm") is None:
-            continue
-        by_nps.setdefault(r["nps_decimal"], []).append(r)
-    for k in by_nps:
-        by_nps[k].sort(key=lambda r: r["wt_mm"])
-    return by_nps
-
-
-def _uses_stainless(material: str) -> bool:
-    return bool(material) and bool(re.search(
-        r"(?:^|\b)(SS\s*316|SS\s*304|TP\s*316|TP\s*304|6\s*MO|N08367)",
-        material, re.I,
-    ))
-
-
-def _pick_schedule(
-    primary_by_nps: dict,
-    nps: float,
-    calc_thk_mm: float,
-    fallback_by_nps: Optional[dict] = None,
-) -> Optional[dict]:
-    """Pick the lightest schedule whose WT ≥ calc_thk_mm.
-    Stainless service uses B36.19M primarily; falls back to B36.10M for
-    walls heavier than 80S."""
-    if calc_thk_mm is None:
-        return None
-
-    def _scan(by_nps):
-        rows = by_nps.get(nps) or [] if by_nps else []
-        if not rows:
-            return None
-        return next((r for r in rows if r["wt_mm"] >= calc_thk_mm), None)
-
-    pick = _scan(primary_by_nps)
-    used_fallback = False
-    if pick is None and fallback_by_nps:
-        pick = _scan(fallback_by_nps)
-        if pick is not None:
-            used_fallback = True
-
-    status = "OK"
-    if pick is None:
-        heavy_table = fallback_by_nps if fallback_by_nps else primary_by_nps
-        rows = (heavy_table.get(nps) if heavy_table else None) or []
-        if not rows:
-            return None
-        pick = rows[-1]
-        status = "NOT OK"
-
-    sch = pick.get("schedule") if pick.get("schedule") is not None else (pick.get("identification") or "—")
-    return {"sch": str(sch), "wt_mm": pick["wt_mm"], "status": status, "fallback": used_fallback}
-
-
-def _joint_eff(joint: str) -> float:
-    return {
-        "Seamless": 1.0, "EFW, 100% RT": 1.0, "ERW": 0.85, "EFW": 0.85,
-    }.get(joint or "Seamless", 1.0)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1092,81 +992,59 @@ def build_workbook(
     mdmt_c: float,
     joint_type: str,
 ) -> tuple[io.BytesIO, str]:
-    """Resolve the class and produce a Datasheet-style xlsx that mirrors
-    the on-screen Excel View (Tab 6)."""
+    """Produce a Datasheet-style xlsx for the given inputs.
 
-    resolved = class_resolver.resolve(
-        rating=rating, material=material, ca=ca, service=service,
+    Architecture: this function does NO engineering math itself. It
+    calls `pms_snapshot.build_pms_snapshot()` — the single source of
+    truth used by `/api/compute-pms` and `/api/pms-agent/save` — and
+    feeds that snapshot into the existing section-builder functions
+    (`_ds_build_*`) which handle pure Excel formatting.
+
+    Consequence: every value in the downloaded Excel matches what the
+    SPA renders on screen, by construction. Future changes to the
+    B31.3 calc engine, flag rules, materials tab, etc. reflect in the
+    Excel automatically — no parallel updates required."""
+
+    # ── 1. Build the canonical snapshot — same as /api/compute-pms ──
+    snapshot = pms_snapshot.build_pms_snapshot(
+        rating=rating,
+        material=material,
+        corrosion_allowance=ca,
+        service=service or "",
+        design_pressure_barg=design_p_barg,
+        design_temp_c=design_t_c,
+        mdmt_c=mdmt_c,
+        joint_type=joint_type,
     )
-    class_code = resolved["class_code"]
-    pt         = resolved.get("pressure_temperature") or {}
-    cf         = resolved.get("code_factors") or {}
+    class_code = snapshot["class_code"]
+    pt         = snapshot.get("pressure_temperature") or {}
+    cf         = snapshot.get("code_factors") or {}
     fs         = cf.get("fitting_specs") or {}
     fx         = cf.get("flange_extras") or {}
+    eff        = snapshot.get("effective_design_conditions") or {}
 
-    # Wall-thickness compute (drives Pipe Data SCH / WT cells).
-    cold_t_c = (pt.get("temperatures_c") or [38.0])[0]
-    s_table   = (cf.get("stress_table") or {}).get("stress_psi_by_temp_c") or {}
-    S1_psi    = _interp(s_table, cold_t_c)   if s_table else None
-    S2_psi    = _interp(s_table, design_t_c) if s_table else None
-    y_curve   = cf.get("y_curve") or {}
-    y_temps_c = y_curve.get("temperatures_c") or []
-    y_vals    = y_curve.get("y_values") or []
-    y_by_temp = {str(t): v for t, v in zip(y_temps_c, y_vals) if v is not None}
-    Y = _interp(y_by_temp, design_t_c) if y_by_temp else 0.4
-    Y = round(Y, 2)
-    W = 1.0 if design_t_c <= 510 else float("nan")
-    E = _joint_eff(joint_type)
-    C_mm = _parse_ca_mm(ca)
-    mill_tol = 0.125
+    # ── 2. Adapt snapshot.wall_thickness.rows → the ctx shape the
+    #       existing section builders expect (sch_display→sch,
+    #       sch_status→status). Snapshot is the source of truth.
+    snap_rows = (snapshot.get("wall_thickness") or {}).get("rows") or []
+    wt_rows = [
+        {
+            "nps":         r.get("nps"),
+            "nps_decimal": r.get("nps_decimal"),
+            "od_mm":       r.get("od_mm"),
+            "t_mm":        r.get("t_mm"),
+            "d_over_6":    r.get("d_over_6"),
+            "validity":    r.get("validity"),
+            "tm_mm":       r.get("tm_mm"),
+            "calc_thk_mm": r.get("calc_thk_mm"),
+            "sch":         r.get("sch_display"),
+            "sel_thk_mm":  r.get("sel_thk_mm"),
+            "status":      r.get("sch_status"),
+        }
+        for r in snap_rows
+    ]
 
-    nps_list = _nps_rows(material, service)
-    b3610 = _b3610_rows()
-    use_ss = _uses_stainless(material)
-    b3619 = _b3619_rows() if use_ss else {}
-    sched_table_primary  = b3619 if use_ss else b3610
-    sched_table_fallback = b3610 if use_ss else None
-
-    P1_psi = _bargToPsig((pt.get("cold_point") or {}).get("pressure_barg") or 0)
-    P2_psi = _bargToPsig(design_p_barg)
-
-    def tD(P, S):
-        if S is None or P is None or not math.isfinite(W):
-            return None
-        return P / (2 * (S * E * W + P * Y))
-    tD1, tD2 = tD(P1_psi, S1_psi), tD(P2_psi, S2_psi)
-    candidates = [v for v in (tD1, tD2) if v is not None]
-    tDmax = max(candidates) if candidates else None
-
-    wt_rows = []
-    for r in nps_list:
-        D = r["od_mm"]
-        t_mm = tDmax * D if tDmax is not None else None
-        d_over_6 = D / 6
-        valid = (t_mm < d_over_6) if t_mm is not None else None
-        tm = t_mm + C_mm if t_mm is not None else None
-        calc_thk = tm / (1 - mill_tol) if tm is not None else None
-        if r.get("sch") is not None and r.get("wt_mm") is not None:
-            pick = {"sch": str(r["sch"]), "wt_mm": r["wt_mm"], "status": "OK", "fallback": False}
-        else:
-            pick = (_pick_schedule(sched_table_primary, r["nps_decimal"],
-                                   calc_thk, sched_table_fallback)
-                    if calc_thk is not None else None)
-        wt_rows.append({
-            "nps":         r["nps"],
-            "nps_decimal": r["nps_decimal"],
-            "od_mm":       D,
-            "t_mm":        t_mm,
-            "d_over_6":    d_over_6,
-            "validity":    "OK" if valid else ("ALERT" if valid is False else None),
-            "tm_mm":       tm,
-            "calc_thk_mm": calc_thk,
-            "sch":         pick["sch"] if pick else None,
-            "sel_thk_mm":  pick["wt_mm"] if pick else None,
-            "status":      pick["status"] if pick else None,
-        })
-
-    # Total columns — driven by NPS axis length + label column.
+    # ── 3. Total columns — driven by NPS axis length + label column.
     nps_count   = max(len(wt_rows), 7)
     total_cols  = max(nps_count + 1, 12)
 
@@ -1178,21 +1056,32 @@ def build_workbook(
     for i in range(2, total_cols + 1):
         ws.column_dimensions[get_column_letter(i)].width = 10
 
+    # Design conditions: prefer the user-supplied values; fall back to
+    # the effective values the snapshot applied when nulls came in.
     ctx = {
         "class_code":    class_code,
         "rating":        rating,
         "material":      material,
         "ca":            ca,
         "service":       (service or "").strip() or "—",
-        "design_p":      design_p_barg,
-        "design_t":      design_t_c,
-        "mdmt":          mdmt_c,
-        "joint_type":    joint_type,
+        "design_p":      design_p_barg if design_p_barg is not None else eff.get("design_pressure_barg"),
+        "design_t":      design_t_c    if design_t_c    is not None else eff.get("design_temp_c"),
+        "mdmt":          mdmt_c        if mdmt_c        is not None else eff.get("mdmt_c"),
+        "joint_type":    joint_type    or eff.get("joint_type"),
         "fitting_specs": fs,
         "flange_extras": fx,
         "branch_chart":  cf.get("branch_chart"),
         "pt":            pt,
         "wt_rows":       wt_rows,
+        # Surface the rest of the snapshot too in case future section
+        # builders want to render adequacy / flags / materials_tab /
+        # derived conditions. Today's builders don't use these yet but
+        # the data is here when they're extended.
+        "adequacy":           snapshot.get("adequacy"),
+        "derived_conditions": snapshot.get("derived_conditions"),
+        "wt_summary":         (snapshot.get("wall_thickness") or {}).get("summary"),
+        "wt_flags":           (snapshot.get("wall_thickness") or {}).get("flags"),
+        "materials_tab":      snapshot.get("materials_tab"),
         "rev":           "A0",
     }
 
