@@ -273,6 +273,47 @@ def _ds_build_header(ws, row, ctx, total_cols):
     _ds_write(ws, row, cols[4], sheet_no, span=spans[4], font=DS_FONT_VAL_B, align=DS_CENTER)
     row += 1
 
+    # ── Design Conditions row — Design P / Design T / MDMT / Joint Type
+    # The values come from `ctx["design_p"] / design_t / mdmt / joint_type`
+    # which the public `build_workbook()` populates from either the user-
+    # supplied values OR the snapshot's effective_design_conditions
+    # (the cap-at-300 / curve-interpolated seeding). Showing them here
+    # so the engineer can see exactly which (P, T, MDMT, joint) the
+    # snapshot was built against — particularly important for
+    # user-customized (New-spec-) PMS where the design point isn't
+    # the standard cold-end / hottest-point default.
+    def _fmt_num(v, dp):
+        if v is None:
+            return "—"
+        try:
+            return f"{round(float(v), dp):g}"
+        except (TypeError, ValueError):
+            return "—"
+
+    design_p_str = f"{_fmt_num(ctx.get('design_p'), 1)} barg"
+    design_t_str = f"{_fmt_num(ctx.get('design_t'), 0)} °C"
+    mdmt_str     = f"{_fmt_num(ctx.get('mdmt'),     0)} °C"
+    joint_str    = ctx.get("joint_type") or "—"
+
+    # Four label/value cells across the right side — same column splits
+    # as the Class/Material row above so the header reads as a grid.
+    dc_labels = ["Design P", "Design T", "MDMT", "Joint Type"]
+    dc_values = [design_p_str, design_t_str, mdmt_str, joint_str]
+    # Use 4 of the 5 segments (Sheet No. column is omitted on this row).
+    _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
+    for c, lbl, sp in zip(cols[:4], dc_labels, spans[:4]):
+        _ds_write(ws, row, c, lbl, span=sp,
+                  font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_CENTER)
+    # Stretch the last segment to span the remaining width
+    _ds_write(ws, row, cols[4], "", span=spans[4],
+              font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_CENTER)
+    row += 1
+    _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
+    for c, v, sp in zip(cols[:4], dc_values, spans[:4]):
+        _ds_write(ws, row, c, v, span=sp, font=DS_FONT_VAL_B, align=DS_CENTER)
+    _ds_write(ws, row, cols[4], "", span=spans[4], font=DS_FONT_VAL_B, align=DS_CENTER)
+    row += 1
+
     # Design Code / Service / Branch Chart
     has_nace = "NACE" in (ctx["material"] or "").upper()
     design_code = ("—" if is_tubing_cls else
@@ -464,7 +505,19 @@ def _ds_build_pipe_data(ws, row, ctx, total_cols):
     else:
         def _sch(r): return "—" if r.get("status") == "NOT OK" else (r.get("sch") or "—")
         def _wt(r):
-            return _ds_fmt(r.get("calc_thk_mm"), 2) if r.get("status") == "NOT OK" else _ds_fmt(r.get("sel_thk_mm"), 2)
+            # NOT OK rows echo calc_thk rounded UP to 1 dp (backend ships the
+            # pre-formatted `sel_thk_mm_display` so the SPA/Excel/HTML page
+            # all show the same value). OK rows keep the schedule's exact
+            # 2-decimal WT.
+            if r.get("status") == "NOT OK":
+                disp = r.get("sel_thk_mm_display")
+                if disp:
+                    return disp
+                ct = r.get("calc_thk_mm")
+                if ct is None:
+                    return "—"
+                return f"{math.ceil(ct * 10) / 10:.1f}"
+            return _ds_fmt(r.get("sel_thk_mm"), 2)
         _data_row("Sch.",   [_sch(r) for r in wt_rows])
         _data_row("WT. mm", [_wt(r)  for r in wt_rows])
 
@@ -1028,17 +1081,19 @@ def build_workbook(
     snap_rows = (snapshot.get("wall_thickness") or {}).get("rows") or []
     wt_rows = [
         {
-            "nps":         r.get("nps"),
-            "nps_decimal": r.get("nps_decimal"),
-            "od_mm":       r.get("od_mm"),
-            "t_mm":        r.get("t_mm"),
-            "d_over_6":    r.get("d_over_6"),
-            "validity":    r.get("validity"),
-            "tm_mm":       r.get("tm_mm"),
-            "calc_thk_mm": r.get("calc_thk_mm"),
-            "sch":         r.get("sch_display"),
-            "sel_thk_mm":  r.get("sel_thk_mm"),
-            "status":      r.get("sch_status"),
+            "nps":                r.get("nps"),
+            "nps_decimal":        r.get("nps_decimal"),
+            "od_mm":              r.get("od_mm"),
+            "t_mm":                r.get("t_mm"),
+            "d_over_6":           r.get("d_over_6"),
+            "validity":           r.get("validity"),
+            "tm_mm":              r.get("tm_mm"),
+            "calc_thk_mm":        r.get("calc_thk_mm"),
+            "sch":                r.get("sch_display"),
+            "sel_thk_mm":         r.get("sel_thk_mm"),
+            # Pre-formatted display string (ceil to 1 dp) for NOT OK rows.
+            "sel_thk_mm_display": r.get("sel_thk_mm_display"),
+            "status":             r.get("sch_status"),
         }
         for r in snap_rows
     ]
@@ -1049,7 +1104,12 @@ def build_workbook(
 
     wb = Workbook()
     ws = wb.active
-    ws.title = f"PMS-{class_code}"
+    # Excel sheet titles forbid these chars: : \ / ? * [ ]
+    # `class_code` can include "[" / "]" for customized PMS variants
+    # (e.g. "New-spec-[A1]"), so sanitise before assigning. We also
+    # cap at 31 chars (Excel's title length limit).
+    _safe_sheet_name = re.sub(r"[\[\]:\\/?*]", "", f"PMS-{class_code}")[:31]
+    ws.title = _safe_sheet_name
 
     ws.column_dimensions[get_column_letter(1)].width = 22
     for i in range(2, total_cols + 1):

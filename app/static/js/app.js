@@ -1887,18 +1887,18 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const wtCellsRow  = dsAxis.map(n => {
         const r = rowsByNps[n];
         if (!r) return '<td>—</td>';
-        // Reuse backend-owned display string (1 dp). Fall back to local
-        // `_dsFmt(., 1)` only for legacy snapshots without the display fields.
+        // Project rule: NOT OK rows echo calc_thk for WT (rounded UP to 1
+        // decimal, backend ships `sel_thk_mm_display`); OK rows show the
+        // schedule's exact 2-decimal sel_thk.
         if (r.sch_status === 'NOT OK') {
-            const v = r.calc_thk_mm_display != null
-                ? r.calc_thk_mm_display
-                : (r.calc_thk_mm != null ? _dsFmt(r.calc_thk_mm, 1) : '—');
+            const v = r.sel_thk_mm_display != null
+                ? r.sel_thk_mm_display
+                : (r.calc_thk_mm != null
+                    ? (Math.ceil(r.calc_thk_mm * 10) / 10).toFixed(1)
+                    : '—');
             return `<td>${v}</td>`;
         }
-        const v = r.sel_thk_mm_display != null
-            ? r.sel_thk_mm_display
-            : (r.sel_thk_mm != null ? _dsFmt(r.sel_thk_mm, 1) : '—');
-        return `<td>${v}</td>`;
+        return `<td>${r.sel_thk_mm != null ? _dsFmt(r.sel_thk_mm, 2) : '—'}</td>`;
     }).join('');
 
     // GRE-specific rows: ID and WT come directly from the dimension file
@@ -2281,20 +2281,18 @@ function populateWallThicknessTable(state, designPbarg, designTc) {
             const notOk       = r.sch_status === 'NOT OK';
             // Per project rule: when the standard schedule table cannot meet
             // the calc thk, the SCH cell is blanked and SEL.THK echoes the
-            // calc thk in the same column. Backend owns the precision —
-            // `sel_thk_mm_display` / `calc_thk_mm_display` are pre-formatted
-            // strings (currently 1 decimal); the SPA, Excel, and this page
-            // all render the same value. Fall back to `.toFixed()` only for
-            // legacy saved snapshots that pre-date these fields.
+            // calc thk in the same column — rounded UP to 1 decimal place
+            // (backend ships the pre-formatted `sel_thk_mm_display` string).
+            // OK rows continue to show the schedule's exact 2-decimal WT.
             const schDisp     = notOk ? '—'
                               : (r.sch_display != null ? r.sch_display : blank);
             const selThkDisp  = notOk
-                              ? (r.calc_thk_mm_display != null
-                                  ? r.calc_thk_mm_display
-                                  : (r.calc_thk_mm != null ? r.calc_thk_mm.toFixed(1) : blank))
-                              : (r.sel_thk_mm_display != null
+                              ? (r.sel_thk_mm_display != null
                                   ? r.sel_thk_mm_display
-                                  : (r.sel_thk_mm != null ? r.sel_thk_mm.toFixed(1) : blank));
+                                  : (r.calc_thk_mm != null
+                                      ? (Math.ceil(r.calc_thk_mm * 10) / 10).toFixed(1)
+                                      : blank))
+                              : (r.sel_thk_mm != null ? r.sel_thk_mm.toFixed(2) : blank);
             const statusDisp  = r.sch_status != null ? r.sch_status : blank;
             const statusClass = r.sch_status === 'OK' ? 'wt-ok' : (notOk ? 'wt-alert' : '');
 
