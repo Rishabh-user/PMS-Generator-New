@@ -413,21 +413,40 @@ def compute_wall_thickness_rows(
                     if design_pressure_barg and design_pressure_barg > 0:
                         margin_pct = ((mawp_barg - design_pressure_barg) / design_pressure_barg) * 100
 
+        # SEL. THK column — backend owns the decimal precision so every
+        # client (page UI, SPA, Excel) renders the same value. Project
+        # convention: 1 decimal place for selected wall thickness. The
+        # NOT-OK fallback (which echoes calc_thk_mm in this column)
+        # uses the same precision so the column reads consistently.
+        # Numeric `sel_thk_mm` / `calc_thk_mm` stay full-precision for
+        # downstream calcs and the Excel exporter.
+        _SEL_THK_DECIMALS = 1
+        sel_thk_mm_display = (
+            f"{sel_thk_mm:.{_SEL_THK_DECIMALS}f}"
+            if sel_thk_mm is not None else None
+        )
+        calc_thk_mm_display = (
+            f"{calc_thk:.{_SEL_THK_DECIMALS}f}"
+            if calc_thk is not None else None
+        )
+
         out.append({
-            "nps":         str(r["nps"]),
-            "nps_decimal": float(r["nps_decimal"]),
-            "od_mm":       D,
-            "t_mm":        t_mm,
-            "d_over_6":    d_over_6,
-            "validity":    validity,
-            "tm_mm":       tm,
-            "mill_tol":    mill_tol,
-            "calc_thk_mm": calc_thk,
-            "sch_display": sched["sch_display"] if sched else None,
-            "sel_thk_mm":  sel_thk_mm,
-            "sch_status":  sched["status"] if sched else None,
-            "mawp_barg":   mawp_barg,
-            "margin_pct":  margin_pct,
+            "nps":                 str(r["nps"]),
+            "nps_decimal":         float(r["nps_decimal"]),
+            "od_mm":               D,
+            "t_mm":                t_mm,
+            "d_over_6":            d_over_6,
+            "validity":            validity,
+            "tm_mm":               tm,
+            "mill_tol":            mill_tol,
+            "calc_thk_mm":         calc_thk,
+            "calc_thk_mm_display": calc_thk_mm_display,
+            "sch_display":         sched["sch_display"] if sched else None,
+            "sel_thk_mm":          sel_thk_mm,
+            "sel_thk_mm_display":  sel_thk_mm_display,
+            "sch_status":          sched["status"] if sched else None,
+            "mawp_barg":           mawp_barg,
+            "margin_pct":          margin_pct,
         })
     return out
 

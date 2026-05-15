@@ -55,14 +55,24 @@ function markApiOnline() {
 // ---------------------------------------------------------------------------
 // Plain <select> populator
 // ---------------------------------------------------------------------------
-function fillSelect(id, items, placeholder) {
+function fillSelect(id, items, placeholder, disabledItems) {
     const sel = document.getElementById(id);
     if (!sel) return;
+    const disabledSet = new Set(disabledItems || []);
     sel.innerHTML = `<option value="">${placeholder}</option>`;
     items.forEach(v => {
         const opt = document.createElement('option');
         opt.value = v;
-        opt.textContent = v;
+        // Show "(disabled)" suffix so engineers know the option exists
+        // but isn't currently selectable. Disabling list comes from
+        // pressure_ratings.json → disabled_ratings; backend owns the
+        // decision, page just renders.
+        if (disabledSet.has(v)) {
+            opt.textContent = `${v} (disabled)`;
+            opt.disabled = true;
+        } else {
+            opt.textContent = v;
+        }
         sel.appendChild(opt);
     });
 }
@@ -162,7 +172,7 @@ async function loadOptions() {
         const res = await API.options();
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        fillSelect('pipingClass',         data.pressure_ratings,      '-- Select Rating --');
+        fillSelect('pipingClass',         data.pressure_ratings,      '-- Select Rating --', data.disabled_pressure_ratings);
         fillSelect('material',            data.materials,             '-- Select Material --');
         fillSelect('corrosionAllowance',  data.corrosion_allowances,  '-- Select C.A. --');
         initServiceMultiSelect(data.services, !!data.services_allow_custom);
@@ -1795,10 +1805,18 @@ function renderDatasheetTab(state, designPbarg, designTc) {
     const wtCellsRow  = dsAxis.map(n => {
         const r = rowsByNps[n];
         if (!r) return '<td>—</td>';
+        // Reuse backend-owned display string (1 dp). Fall back to local
+        // `_dsFmt(., 1)` only for legacy snapshots without the display fields.
         if (r.sch_status === 'NOT OK') {
-            return `<td>${r.calc_thk_mm != null ? _dsFmt(r.calc_thk_mm, 2) : '—'}</td>`;
+            const v = r.calc_thk_mm_display != null
+                ? r.calc_thk_mm_display
+                : (r.calc_thk_mm != null ? _dsFmt(r.calc_thk_mm, 1) : '—');
+            return `<td>${v}</td>`;
         }
-        return `<td>${r.sel_thk_mm != null ? _dsFmt(r.sel_thk_mm, 2) : '—'}</td>`;
+        const v = r.sel_thk_mm_display != null
+            ? r.sel_thk_mm_display
+            : (r.sel_thk_mm != null ? _dsFmt(r.sel_thk_mm, 1) : '—');
+        return `<td>${v}</td>`;
     }).join('');
 
     // GRE-specific rows: ID and WT come directly from the dimension file
@@ -2183,12 +2201,20 @@ function populateWallThicknessTable(state, designPbarg, designTc) {
             const notOk       = r.sch_status === 'NOT OK';
             // Per project rule: when the standard schedule table cannot meet
             // the calc thk, the SCH cell is blanked and SEL.THK echoes the
-            // calc thk rounded to 2 dp — engineer specs a custom wall.
+            // calc thk in the same column. Backend owns the precision —
+            // `sel_thk_mm_display` / `calc_thk_mm_display` are pre-formatted
+            // strings (currently 1 decimal); the SPA, Excel, and this page
+            // all render the same value. Fall back to `.toFixed()` only for
+            // legacy saved snapshots that pre-date these fields.
             const schDisp     = notOk ? '—'
                               : (r.sch_display != null ? r.sch_display : blank);
             const selThkDisp  = notOk
-                              ? (r.calc_thk_mm != null ? r.calc_thk_mm.toFixed(2) : blank)
-                              : (r.sel_thk_mm != null ? r.sel_thk_mm.toFixed(2) : blank);
+                              ? (r.calc_thk_mm_display != null
+                                  ? r.calc_thk_mm_display
+                                  : (r.calc_thk_mm != null ? r.calc_thk_mm.toFixed(1) : blank))
+                              : (r.sel_thk_mm_display != null
+                                  ? r.sel_thk_mm_display
+                                  : (r.sel_thk_mm != null ? r.sel_thk_mm.toFixed(1) : blank));
             const statusDisp  = r.sch_status != null ? r.sch_status : blank;
             const statusClass = r.sch_status === 'OK' ? 'wt-ok' : (notOk ? 'wt-alert' : '');
 

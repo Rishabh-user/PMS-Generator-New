@@ -84,9 +84,18 @@ def services() -> dict:
 
 @router.get("/options/all")
 def all_options() -> dict:
-    """One round-trip for the form to populate every dropdown at once."""
+    """One round-trip for the form to populate every dropdown at once.
+
+    `disabled_pressure_ratings` is the subset of `pressure_ratings`
+    that should be rendered as disabled (visible but unselectable).
+    The decision lives in `pressure_ratings.json` — to re-enable a
+    rating, just remove it from `disabled_ratings` in the JSON. No
+    code change anywhere.
+    """
+    ratings_doc = _load("pressure_ratings.json")
     return {
-        "pressure_ratings": _load("pressure_ratings.json")["ratings"],
+        "pressure_ratings": ratings_doc["ratings"],
+        "disabled_pressure_ratings": ratings_doc.get("disabled_ratings", []),
         "materials": _load("materials.json")["materials"],
         "corrosion_allowances": _load("corrosion_allowances.json")["corrosion_allowances"],
         "services": _load("services.json")["services"],

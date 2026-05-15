@@ -1,4 +1,5 @@
 {
+  "_note": "`ratings` is the full visible list (rendered in every dropdown). `disabled_ratings` is the subset that should be rendered as disabled options — visible but unselectable. To re-enable an entry, just remove it from `disabled_ratings`.",
   "ratings": [
     "150#",
     "300#",
@@ -13,5 +14,9 @@
     "Tubing A",
     "Tubing B",
     "Tubing C"
+  ],
+  "disabled_ratings": [
+    "5000#",
+    "10000#"
   ]
 }
