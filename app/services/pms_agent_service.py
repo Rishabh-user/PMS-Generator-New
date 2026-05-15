@@ -59,12 +59,37 @@ def _catalog() -> dict:
     def load(name: str) -> Any:
         return json.loads((data_dir / name).read_text(encoding="utf-8"))
 
+    ratings_doc = load("pressure_ratings.json")
     return {
-        "ratings":             load("pressure_ratings.json").get("ratings", []),
+        "ratings":             ratings_doc.get("ratings", []),
+        # Subset of `ratings` marked as temporarily unavailable. The chat
+        # agent rejects requests for these ratings up front with an
+        # explanation of which standard they actually belong to (API 6A
+        # for 5000# / 10000#, not ASME B16.5).
+        "disabled_ratings":    set(ratings_doc.get("disabled_ratings", [])),
         "materials":           load("materials.json").get("materials", []),
         "corrosion_allowances": load("corrosion_allowances.json").get("corrosion_allowances", []),
         "services":            load("services.json").get("services", []),
     }
+
+
+# Map of "non-B16.5" ratings → the standard they actually belong to.
+# Used to give the user an accurate technical-standard citation when
+# they ask for a rating that ASME B16.5 doesn't cover.
+_NON_B165_RATING_STANDARDS: dict[str, str] = {
+    "5000#":         "API Specification 6A (wellhead / Christmas-tree equipment)",
+    "10000#":        "API Specification 6A (wellhead / Christmas-tree equipment)",
+    "EEMUA 20 bar":  "EEMUA 144 (90/10 CuNi tubing)",
+    "Tubing":        "ASTM A269 (instrument tubing)",
+    "Tubing A":      "ASTM A269 (instrument tubing)",
+    "Tubing B":      "ASTM A269 (instrument tubing)",
+    "Tubing C":      "ASTM A269 (instrument tubing)",
+}
+
+
+def _standard_for_rating(rating: str) -> str:
+    """Return the engineering standard that defines this rating class."""
+    return _NON_B165_RATING_STANDARDS.get(rating, "ASME B16.5")
 
 
 def reload_catalog() -> None:
@@ -771,8 +796,10 @@ _TECH_REVIEW_NOTE = (
 # we want the engineer to do a human review before signing off.
 _BORDERLINE_NOTE_TEMPLATE = (
     "⚠️ **We don't have a standard PMS for this P-T requirement** — {reason}. "
-    "The class above is technically adequate per ASME B16.5, but the design "
-    "point is at the edge of standard service.\n\n"
+    "The class meets the published pressure rating per **{standard}**, but "
+    "you're operating at the very top of the curve's published range — "
+    "beyond which the standard has no data, and creep / oxidation behaviour "
+    "starts to matter for sustained service.\n\n"
     "📝 **Note:** Please consult a technical engineer once and confirm this "
     "PMS is suitable for sustained operation before issuing the report."
 )
@@ -1013,6 +1040,11 @@ def chat(prompt: str, history: list[dict]) -> dict:
     extracted = _extract_filters_with_claude(prompt, history)
     filters = _resolve_filter_sets(extracted)
 
+    # Note: `disabled_ratings` only disables the on-screen dropdown.
+    # The chat agent still generates PMS for those ratings — but the
+    # caution / borderline messages cite the correct standard for
+    # the rating (see `_standard_for_rating` and `_design_caution_reason`).
+
     # Did the user actually constrain anything (catalog OR numeric range
     # OR exclusion flag OR design conditions)? Design pressure on its own
     # is enough to trigger enumeration — the user wants us to find a
@@ -1193,7 +1225,14 @@ def chat(prompt: str, history: list[dict]) -> dict:
         )
         caution_reason = _design_caution_reason(matched_classes, effective_t)
         if caution_reason:
-            reply = f"{reply}\n\n{_BORDERLINE_NOTE_TEMPLATE.format(reason=caution_reason)}"
+            # Cite the engineering standard that governs THIS rating —
+            # ASME B16.5 for 150# … 2500#, API 6A for 5000# / 10000#,
+            # EEMUA 144 for "EEMUA 20 bar", etc.
+            standard = _standard_for_rating(m0.get("rating") or "")
+            reply = (
+                f"{reply}\n\n"
+                f"{_BORDERLINE_NOTE_TEMPLATE.format(reason=caution_reason, standard=standard)}"
+            )
 
     return {
         "reply": reply,
