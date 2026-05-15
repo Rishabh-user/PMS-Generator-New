@@ -1,4 +1,5 @@
 {
+  "_note": "Project-standard corrosion allowances. Ascending order. 'NIL' is the project keyword for zero allowance (matched case-insensitively by parse_corrosion_mm in wt_calc.py — see ^\\s*NIL\\s*$). The set is small and already user-friendly; no category grouping needed.",
   "corrosion_allowances": [
     "NIL",
     "1.5 mm",

@@ -955,24 +955,23 @@ def _ds_build_valves(ws, row, ctx, total_cols):
 
 
 # ── 9. Notes ──────────────────────────────────────────────────────
-_DS_NOTES = [
-    "PMS to be read in conjunction with Project Piping Design Basis, and Valve Material Specification.",
-    "Weld Joint Factor for welded pipe shall be as per ASME B 31.3.",
-    "Welded fittings shall be 100% radiographed.",
-    "Spectacle blinds and spacer sizes and rating that are not available in ASME B 16.48 shall be as per manuf. standard. Design shall be submitted to Company for review and approval.",
-    "Maximum temperature limit for all Soft Seat Ball Valve shall be 250°C.",
-    "Wafer check valve to be avoided, unless the available space constraint does not allow normal check valve.",
-    "Wafer type Butterfly Valve may be used only in water service and shall not be used in hydrocarbon service.",
-    "Two jackscrew, 180 degree apart shall be provided in one of the flanges for all orifice flange and specified spectacle blind assemblies.",
-]
-
+# Notes content moved to `app/data/pms_notes.json`; see
+# `wt_calc.resolve_project_notes()`. The snapshot already exposes the
+# filtered list as `project_notes` (preferred). For legacy callers /
+# safety we fall back to the unfiltered text list.
 
 def _ds_build_notes(ws, row, ctx, total_cols):
     row = _ds_section_row(ws, row, "NOTES", total_cols)
-    for i, note in enumerate(_DS_NOTES, start=1):
-        _ds_write(ws, row, 1, str(i),
+    notes: list[dict] = list(ctx.get("project_notes") or [])
+    if not notes:
+        # Fallback: unfiltered text list if the snapshot didn't carry one.
+        from app.services import wt_calc as _wt
+        notes = [{"id": i + 1, "text": t}
+                 for i, t in enumerate(_wt.project_notes_texts())]
+    for n in notes:
+        _ds_write(ws, row, 1, str(n.get("id") or ""),
                   font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_CENTER)
-        _ds_write(ws, row, 2, note, span=total_cols - 1,
+        _ds_write(ws, row, 2, n.get("text") or "", span=total_cols - 1,
                   font=DS_FONT_VAL, align=DS_LEFT)
         row += 1
     return row
@@ -1082,6 +1081,9 @@ def build_workbook(
         "wt_summary":         (snapshot.get("wall_thickness") or {}).get("summary"),
         "wt_flags":           (snapshot.get("wall_thickness") or {}).get("flags"),
         "materials_tab":      snapshot.get("materials_tab"),
+        # Project standard notes — filtered list from the snapshot
+        # (single source of truth is `pms_notes.json`).
+        "project_notes":      snapshot.get("project_notes") or [],
         "rev":           "A0",
     }
 

@@ -475,6 +475,116 @@ def summary_stats(rows: list[dict], pt: Optional[dict], design_pressure_barg: Op
     }
 
 
+# ── Project standard notes (PMS datasheet "NOTES" section) ────────
+#
+# Loaded from app/data/pms_notes.json — single source of truth shared
+# by the Excel exporter, the page UI (Tab 4 + Datasheet tab), and any
+# future client. Each note carries an optional `when` predicate so the
+# resolver can filter by current rating / material / service / design T.
+
+@lru_cache(maxsize=1)
+def _load_project_notes_doc() -> dict:
+    return json.loads((settings.data_dir / "pms_notes.json").read_text(encoding="utf-8"))
+
+
+def reload_project_notes() -> None:
+    _load_project_notes_doc.cache_clear()
+
+
+def _note_predicate_holds(
+    when: Any,
+    *,
+    rating: Optional[str],
+    material: Optional[str],
+    service: Optional[str],
+    design_temp_c: Optional[float],
+    joint_type: Optional[str],
+) -> bool:
+    """Evaluate a note's `when` predicate against the current PMS context."""
+    if when in (None, "always"):
+        return True
+    if not isinstance(when, dict):
+        # Unknown predicate shape — fail closed (don't show the note).
+        return False
+
+    # Each predicate is a soft AND of the supplied checks. Unknown keys
+    # (e.g. `comment`) are ignored.
+    svc = (service or "").lower()
+    mat = (material or "").lower()
+    rat = rating or ""
+    jt  = (joint_type or "").lower()
+
+    if "service_includes" in when:
+        needle = str(when["service_includes"]).lower()
+        if needle not in svc:
+            return False
+    if "service_excludes" in when:
+        needle = str(when["service_excludes"]).lower()
+        if needle in svc:
+            return False
+    if "material_regex" in when:
+        if not re.search(str(when["material_regex"]), mat, re.I):
+            return False
+    if "material_excludes_regex" in when:
+        if re.search(str(when["material_excludes_regex"]), mat, re.I):
+            return False
+    if "rating_in" in when:
+        allowed = {str(x) for x in when["rating_in"]}
+        if rat not in allowed:
+            return False
+    if "joint_type_in" in when:
+        allowed = {str(x).lower() for x in when["joint_type_in"]}
+        if jt not in allowed:
+            return False
+    if "min_design_temp_c" in when:
+        if design_temp_c is None or design_temp_c < float(when["min_design_temp_c"]):
+            return False
+    if "max_design_temp_c" in when:
+        if design_temp_c is None or design_temp_c > float(when["max_design_temp_c"]):
+            return False
+    return True
+
+
+def resolve_project_notes(
+    *,
+    rating: Optional[str] = None,
+    material: Optional[str] = None,
+    service: Optional[str] = None,
+    design_temp_c: Optional[float] = None,
+    joint_type: Optional[str] = None,
+) -> list[dict]:
+    """Return the filtered list of project notes that apply to the
+    current PMS context. Each item: {id, text}. Order is preserved
+    from `pms_notes.json` but IDs stay stable so the user sees the
+    standard project numbering even when an entry is filtered out."""
+    notes = _load_project_notes_doc().get("notes") or []
+    out: list[dict] = []
+    for n in notes:
+        if _note_predicate_holds(
+            n.get("when"),
+            rating=rating, material=material, service=service,
+            design_temp_c=design_temp_c, joint_type=joint_type,
+        ):
+            out.append({"id": n.get("id"), "text": n.get("text", "")})
+    return out
+
+
+def project_notes_texts(
+    *,
+    rating: Optional[str] = None,
+    material: Optional[str] = None,
+    service: Optional[str] = None,
+    design_temp_c: Optional[float] = None,
+    joint_type: Optional[str] = None,
+) -> list[str]:
+    """Convenience for callers that only need the text strings
+    (e.g. the Excel exporter's NOTES section)."""
+    return [n["text"] for n in resolve_project_notes(
+        rating=rating, material=material, service=service,
+        design_temp_c=design_temp_c, joint_type=joint_type,
+    )]
+
+
 # ── Engineering Requirements & Flags ──────────────────────────────
 
 def evaluate_flags(

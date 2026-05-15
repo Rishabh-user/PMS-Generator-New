@@ -1,5 +1,5 @@
 {
-  "_note": "`ratings` is the full visible list (rendered in every dropdown). `disabled_ratings` is the subset that should be rendered as disabled options — visible but unselectable. To re-enable an entry, just remove it from `disabled_ratings`.",
+  "_note": "`ratings` is the full list (rendered everywhere). `disabled_ratings` is the subset rendered as `(disabled)` — visible but unselectable (currently 5000# / 10000# while the API 6A flow is sorted out). `categories` groups ratings by their governing standard so dropdowns can show <optgroup> headers (ASME B16.5 / API 6A / EEMUA 144 / ASTM A269 instrument tubing). Single source of truth for both visibility and grouping — no code change to enable / disable / re-group a rating.",
   "ratings": [
     "150#",
     "300#",
@@ -18,5 +18,23 @@
   "disabled_ratings": [
     "5000#",
     "10000#"
+  ],
+  "categories": [
+    {
+      "name": "ASME B16.5 (flanges)",
+      "items": ["150#", "300#", "600#", "900#", "1500#", "2500#"]
+    },
+    {
+      "name": "API 6A (wellhead)",
+      "items": ["5000#", "10000#"]
+    },
+    {
+      "name": "EEMUA 144 (90/10 CuNi)",
+      "items": ["EEMUA 20 bar"]
+    },
+    {
+      "name": "Instrument Tubing (ASTM A269)",
+      "items": ["Tubing", "Tubing A", "Tubing B", "Tubing C"]
+    }
   ]
 }

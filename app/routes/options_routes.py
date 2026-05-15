@@ -88,18 +88,24 @@ def all_options() -> dict:
 
     `disabled_pressure_ratings` is the subset of `pressure_ratings`
     that should be rendered as disabled (visible but unselectable).
-    The decision lives in `pressure_ratings.json` — to re-enable a
-    rating, just remove it from `disabled_ratings` in the JSON. No
-    code change anywhere.
+    `*_categories` are optional parallel metadata for UIs that want
+    to render `<optgroup>` headers. Every decision lives in the JSON
+    files — re-enable / re-group / reorder is a JSON edit. No code
+    change anywhere.
     """
     ratings_doc = _load("pressure_ratings.json")
+    materials_doc = _load("materials.json")
+    services_doc = _load("services.json")
     return {
         "pressure_ratings": ratings_doc["ratings"],
         "disabled_pressure_ratings": ratings_doc.get("disabled_ratings", []),
-        "materials": _load("materials.json")["materials"],
+        "pressure_ratings_categories": ratings_doc.get("categories", []),
+        "materials": materials_doc["materials"],
+        "materials_categories": materials_doc.get("categories", []),
         "corrosion_allowances": _load("corrosion_allowances.json")["corrosion_allowances"],
-        "services": _load("services.json")["services"],
-        "services_allow_custom": _load("services.json").get("allow_custom", True),
+        "services": services_doc["services"],
+        "services_categories": services_doc.get("categories", []),
+        "services_allow_custom": services_doc.get("allow_custom", True),
     }
 
 

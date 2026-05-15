@@ -55,32 +55,64 @@ function markApiOnline() {
 // ---------------------------------------------------------------------------
 // Plain <select> populator
 // ---------------------------------------------------------------------------
-function fillSelect(id, items, placeholder, disabledItems) {
+function fillSelect(id, items, placeholder, disabledItems, categories) {
     const sel = document.getElementById(id);
     if (!sel) return;
     const disabledSet = new Set(disabledItems || []);
     sel.innerHTML = `<option value="">${placeholder}</option>`;
-    items.forEach(v => {
+
+    // Helper to render a single <option> with consistent disabled
+    // treatment. Reused by both the flat path and the optgroup path.
+    const mkOpt = (v) => {
         const opt = document.createElement('option');
         opt.value = v;
-        // Show "(disabled)" suffix so engineers know the option exists
-        // but isn't currently selectable. Disabling list comes from
-        // pressure_ratings.json → disabled_ratings; backend owns the
-        // decision, page just renders.
         if (disabledSet.has(v)) {
             opt.textContent = `${v} (disabled)`;
             opt.disabled = true;
         } else {
             opt.textContent = v;
         }
-        sel.appendChild(opt);
-    });
+        return opt;
+    };
+
+    // Backend-driven grouping: when the catalog ships a `categories`
+    // array, we render <optgroup> headers so the engineer can scan
+    // by family (Carbon Steel / Stainless / Duplex / …). Falls back
+    // to the flat list when no categories were provided.
+    if (Array.isArray(categories) && categories.length) {
+        // Build a quick set of all categorised items so any orphan
+        // (in `items` but not in any category) still gets rendered.
+        const categorised = new Set();
+        categories.forEach(cat => {
+            const group = document.createElement('optgroup');
+            group.label = cat.name || '';
+            (cat.items || []).forEach(v => {
+                if (items.includes(v)) {
+                    group.appendChild(mkOpt(v));
+                    categorised.add(v);
+                }
+            });
+            if (group.children.length) sel.appendChild(group);
+        });
+        // Orphans — items the JSON didn't put in any category.
+        const orphans = items.filter(v => !categorised.has(v));
+        if (orphans.length) {
+            const group = document.createElement('optgroup');
+            group.label = 'Other';
+            orphans.forEach(v => group.appendChild(mkOpt(v)));
+            sel.appendChild(group);
+        }
+        return;
+    }
+
+    // Flat fallback.
+    items.forEach(v => sel.appendChild(mkOpt(v)));
 }
 
 // ---------------------------------------------------------------------------
 // Service multi-select with optional free-text "Other"
 // ---------------------------------------------------------------------------
-function initServiceMultiSelect(options, allowCustom) {
+function initServiceMultiSelect(options, allowCustom, categories) {
     const root    = document.getElementById('serviceMultiSelect');
     const panel   = document.getElementById('servicePanel');
     const trigger = document.getElementById('serviceTrigger');
@@ -90,7 +122,9 @@ function initServiceMultiSelect(options, allowCustom) {
     if (!root || !panel || !trigger || !hidden) return;
 
     panel.innerHTML = '';
-    options.forEach(opt => {
+
+    // Helper — emit one option row for the multi-select.
+    const mkRow = (opt) => {
         const row = document.createElement('label');
         row.className = 'multi-select-option';
         row.dataset.value = opt;
@@ -98,7 +132,33 @@ function initServiceMultiSelect(options, allowCustom) {
         row.querySelector('input').value = opt;
         row.querySelector('span').textContent = opt;
         panel.appendChild(row);
-    });
+    };
+
+    if (Array.isArray(categories) && categories.length) {
+        // Backend-driven category grouping. Render a small header
+        // per group (engineers scan visually by family).
+        const seen = new Set();
+        categories.forEach(cat => {
+            const groupItems = (cat.items || []).filter(v => options.includes(v));
+            if (!groupItems.length) return;
+            const hdr = document.createElement('div');
+            hdr.className = 'multi-select-group-header';
+            hdr.textContent = cat.name || '';
+            panel.appendChild(hdr);
+            groupItems.forEach(v => { mkRow(v); seen.add(v); });
+        });
+        // Orphans
+        const orphans = options.filter(v => !seen.has(v));
+        if (orphans.length) {
+            const hdr = document.createElement('div');
+            hdr.className = 'multi-select-group-header';
+            hdr.textContent = 'Other';
+            panel.appendChild(hdr);
+            orphans.forEach(mkRow);
+        }
+    } else {
+        options.forEach(mkRow);
+    }
 
     if (allowCustom) {
         const div = document.createElement('div');
@@ -172,10 +232,10 @@ async function loadOptions() {
         const res = await API.options();
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        fillSelect('pipingClass',         data.pressure_ratings,      '-- Select Rating --', data.disabled_pressure_ratings);
-        fillSelect('material',            data.materials,             '-- Select Material --');
+        fillSelect('pipingClass',         data.pressure_ratings,      '-- Select Rating --', data.disabled_pressure_ratings, data.pressure_ratings_categories);
+        fillSelect('material',            data.materials,             '-- Select Material --', null, data.materials_categories);
         fillSelect('corrosionAllowance',  data.corrosion_allowances,  '-- Select C.A. --');
-        initServiceMultiSelect(data.services, !!data.services_allow_custom);
+        initServiceMultiSelect(data.services, !!data.services_allow_custom, data.services_categories);
         markApiOnline();
     } catch (e) {
         console.error('[options] failed:', e);
@@ -1131,6 +1191,28 @@ function renderTab5Components(state) {
     renderBoltsCard(state);
     renderSpectacleCard(state);
     renderValvesCard(state);
+    renderProjectNotes(state);
+}
+
+
+// Render the project standard "NOTES" section at the bottom of Tab 4.
+// Data is the backend-filtered list from /api/resolve-class (or
+// /api/compute-pms). Single source of truth is app/data/pms_notes.json.
+function renderProjectNotes(state) {
+    const tbl = document.getElementById('rProjectNotesTable');
+    if (!tbl) return;
+    const tbody = tbl.querySelector('tbody') || tbl;
+    const notes = (state && state.projectNotes) || [];
+    if (!notes.length) {
+        tbody.innerHTML = `<tr><td colspan="2" style="padding:10px;text-align:center;color:var(--text-muted)">No project notes applicable to this PMS.</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = notes.map(n => `
+        <tr>
+            <td class="notes-num">${escapeHtml(String(n.id || ''))}</td>
+            <td class="notes-text">${escapeHtml(n.text || '')}</td>
+        </tr>
+    `).join('');
 }
 
 
@@ -2143,17 +2225,15 @@ function renderDatasheetTab(state, designPbarg, designTc) {
                 ${v.needle ? `<tr><td class="ds-label">Needle</td><td class="ds-value ds-code">${escapeHtml(vCode('needle'))}</td></tr>` : ''}
             </table>`}
 
-            <!-- ── Notes ── -->
+            <!-- ── Notes ── (backend-driven from state.projectNotes) -->
             <table class="ds-table">
                 <tr class="ds-section-row"><td colspan="2">NOTES</td></tr>
-                <tr><td class="ds-note-num">1</td><td class="ds-value">PMS to be read in conjunction with Project Piping Design Basis, and Valve Material Specification.</td></tr>
-                <tr><td class="ds-note-num">2</td><td class="ds-value">Weld Joint Factor for welded pipe shall be as per ASME B 31.3.</td></tr>
-                <tr><td class="ds-note-num">3</td><td class="ds-value">Welded fittings shall be 100% radiographed.</td></tr>
-                <tr><td class="ds-note-num">4</td><td class="ds-value">Spectacle blinds and spacer sizes and rating that are not available in ASME B 16.48 shall be as per manuf. standard. Design shall be submitted to Company for review and approval.</td></tr>
-                <tr><td class="ds-note-num">5</td><td class="ds-value">Maximum temperature limit for all Soft Seat Ball Valve shall be 250°C.</td></tr>
-                <tr><td class="ds-note-num">6</td><td class="ds-value">Wafer check valve to be avoided, unless the available space constraint does not allow normal check valve.</td></tr>
-                <tr><td class="ds-note-num">7</td><td class="ds-value">Wafer type Butterfly Valve may be used only in water service and shall not be used in hydrocarbon service.</td></tr>
-                <tr><td class="ds-note-num">8</td><td class="ds-value">Two jackscrew, 180 degree apart shall be provided in one of the flanges for all orifice flange and specified spectacle blind assemblies.</td></tr>
+                ${(state.projectNotes || []).map(n => `
+                    <tr>
+                        <td class="ds-note-num">${escapeHtml(String(n.id || ''))}</td>
+                        <td class="ds-value">${escapeHtml(n.text || '')}</td>
+                    </tr>
+                `).join('')}
             </table>
         </div>
     `;
@@ -2359,21 +2439,31 @@ function evaluateFlags(state, designPbarg, designTc, mdmtC) {
 }
 
 function renderFlags(flags) {
-    const container = document.getElementById('rEngineeringFlags');
-    if (!container) return;
-    if (!flags.length) {
-        container.innerHTML = `<div class="flag-empty">&#10003; All clear — no engineering flags raised for this configuration.</div>`;
-        return;
-    }
-    container.innerHTML = flags.map(f => `
-        <div class="flag-card flag-card-${f.level}">
-            <div class="flag-card-header">
-                <span class="flag-badge flag-badge-${f.level}">${escapeHtml(FLAG_LEVEL_LABEL[f.level] || f.level)}</span>
-                <span class="flag-title">${escapeHtml(f.title)}</span>
+    // Render the same flag list into both placeholders:
+    //   • Tab 3 (Schedule & WT)         → `rEngineeringFlags`
+    //   • Tab 4 (Components & Notes)    → `rEngineeringFlagsBottom`
+    // Tab 3 places them next to the WT calc (engineering context).
+    // Tab 4 fulfils the "& Notes" promise in the tab name and the
+    // subtitle that mentions engineering notes.
+    const containers = [
+        document.getElementById('rEngineeringFlags'),
+        document.getElementById('rEngineeringFlagsBottom'),
+    ].filter(Boolean);
+    if (!containers.length) return;
+
+    const html = !flags.length
+        ? `<div class="flag-empty">&#10003; All clear — no engineering flags raised for this configuration.</div>`
+        : flags.map(f => `
+            <div class="flag-card flag-card-${f.level}">
+                <div class="flag-card-header">
+                    <span class="flag-badge flag-badge-${f.level}">${escapeHtml(FLAG_LEVEL_LABEL[f.level] || f.level)}</span>
+                    <span class="flag-title">${escapeHtml(f.title)}</span>
+                </div>
+                <div class="flag-body">${escapeHtml(f.body)}</div>
             </div>
-            <div class="flag-body">${escapeHtml(f.body)}</div>
-        </div>
-    `).join('');
+        `).join('');
+
+    containers.forEach(c => { c.innerHTML = html; });
 }
 
 // B31.3 Eq. 3a worked-example card. Pure render, no I/O — pulls from
@@ -3271,6 +3361,11 @@ function renderResolution(panel, data, inputs) {
         codeFactors: data.code_factors || null,
         designP:     designP,
         designT:     designT,
+        // Project standard notes (the "NOTES" section that the Excel
+        // datasheet shows). Backend-filtered per each note's `when`
+        // predicate — see app/data/pms_notes.json. Rendered at the
+        // bottom of Tab 4 and inside the Datasheet tab.
+        projectNotes: data.project_notes || [],
     };
     // Cache for the Excel-download handler and any re-render.
     window._currentState = state;

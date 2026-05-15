@@ -1,11 +1,12 @@
 {
+  "_note": "Reordered by material family for easier scanning in the dropdown. `categories` is a parallel-metadata view used by UIs that support <optgroup> headers (the page UI does; SPA picks it up via /api/options/all). `materials` flat list is still the canonical input the rest of the backend reads — entries are unchanged in spelling so regex-driven routing (TITANIUM, BONSTRAND, NACE, GRE, 6 MO, Tubing) continues to work.",
   "materials": [
     "CS",
     "CS NACE",
     "LTCS",
     "LTCS NACE",
-    "CS GALV (Valve: SS)",
     "CS GALV",
+    "CS GALV (Valve: SS)",
     "CS - Epoxy Lined",
     "SS316L",
     "SS316L NACE",
@@ -13,12 +14,38 @@
     "DSS NACE",
     "SDSS",
     "SDSS NACE",
-    "CuNi (Valve: NAB)",
     "Copper",
+    "CuNi (Valve: NAB)",
+    "Titanium",
     "GRE (Valve: NAB)",
     "CPVC (Valve: NAB)",
-    "TITANIUM",
     "SS 316 / 316L (Tubing)",
     "6 MO Tubing"
+  ],
+  "categories": [
+    {
+      "name": "Carbon Steel",
+      "items": ["CS", "CS NACE", "LTCS", "LTCS NACE", "CS GALV", "CS GALV (Valve: SS)", "CS - Epoxy Lined"]
+    },
+    {
+      "name": "Stainless Steel",
+      "items": ["SS316L", "SS316L NACE"]
+    },
+    {
+      "name": "Duplex / Super Duplex",
+      "items": ["DSS", "DSS NACE", "SDSS", "SDSS NACE"]
+    },
+    {
+      "name": "Non-ferrous Alloys",
+      "items": ["Copper", "CuNi (Valve: NAB)", "Titanium"]
+    },
+    {
+      "name": "Composite / Plastic",
+      "items": ["GRE (Valve: NAB)", "CPVC (Valve: NAB)"]
+    },
+    {
+      "name": "Instrument Tubing",
+      "items": ["SS 316 / 316L (Tubing)", "6 MO Tubing"]
+    }
   ]
 }

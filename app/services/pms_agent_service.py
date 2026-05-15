@@ -42,7 +42,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from app.config import settings
-from app.services import ai_service, class_resolver, pms_snapshot, pt_lookup
+from app.services import ai_service, class_resolver, pms_snapshot, pt_lookup, wt_calc
 
 
 logger = logging.getLogger(__name__)
@@ -165,21 +165,27 @@ Output STRICT JSON with this schema (no markdown, no preamble, no prose):
 Ratings: 150#, 300#, 600#, 900#, 1500#, 2500#, 5000#, 10000#, EEMUA 20 bar,
          Tubing, Tubing A, Tubing B, Tubing C
 
-Materials: CS, CS NACE, LTCS, LTCS NACE, CS GALV (Valve: SS), CS GALV,
+Materials: CS, CS NACE, LTCS, LTCS NACE, CS GALV, CS GALV (Valve: SS),
            CS - Epoxy Lined, SS316L, SS316L NACE, DSS, DSS NACE, SDSS,
-           SDSS NACE, CuNi (Valve: NAB), Copper, GRE (Valve: NAB),
-           CPVC (Valve: NAB), TITANIUM, SS 316 / 316L (Tubing), 6 MO Tubing
+           SDSS NACE, Copper, CuNi (Valve: NAB), Titanium, GRE (Valve: NAB),
+           CPVC (Valve: NAB), SS 316 / 316L (Tubing), 6 MO Tubing
 
 Corrosion Allowances: NIL, 1.5 mm, 3 mm, 6 mm
 
 Services (sample — pass through free text if not exact):
-  Cooling Media, Heating Media, Diesel, Steam, Water Injection, Fresh Water,
+  Cooling Media, Heating Media, Diesel, Steam, Water Injection,
+  Hydro Carbon Water Injection with low CO2 and H2S, Fresh Water,
   Hydraulic Oil, Nitrogen, Exhaust, Fuel Oil, Tank Air Vent, Glycol, FG,
   Hydro Carbon service, Corrosive Hydro Carbon service, Flare,
-  Hydro Carbon service (Low Temp), Gas Lift, Utility Water, Bilge, Sewage,
-  Seawater, Firewater, Air, Lube oil, Chemical, Foam, Instrument Air,
-  Diesel Fuel, Raw Sea Water, Potable Water, Hypochlorite,
-  Chemical (Ferric chloride), Coagulant, Chemical Injection (Except Hypochlorite)
+  Hydro Carbon service (Low Temp), Gas Lift,
+  Corrosive Hydro Carbon service (Low Temp), Utility Water, Bilge, Drain,
+  Produced Water, CO2 Gas, Chemical (penetration), Firewater (penetration),
+  Seawater (penetration), Ballast, Inert Gas, COW/Tank Cleaning, Slop,
+  Stripping, Seawater, Firewater, Air, Lube Oil, Chemical, Foam,
+  Instrument Air, Raw Seawater and Topsides Seawater,
+  Topside Seawater and Water Injection, Raw Sea Water, Potable Water,
+  Hypochlorite, Sewage, Chemical (Ferric chloride), Coagulant,
+  Chemical Injection (Except Hypochlorite)
 
 # RULES
 1. ARRAYS: every slot is an array. Single value → 1-element array. None → [].
@@ -686,6 +692,50 @@ def _is_adequate(
     return True, None
 
 
+def _wt_calc_feasible(
+    resolved: dict, material: str, effective_t_c: Optional[float],
+) -> tuple[bool, Optional[str]]:
+    """Quick check: would the snapshot's WT calc actually produce a
+    result at this design T? Two prerequisites:
+
+      • Allowable stress S available at design T (from B31.3 Table A-1
+        via `resolved.code_factors.stress_table`).
+      • W-factor defined (project standard: W = 1 for seamless / 100% RT
+        welded up to 510 °C; above that W becomes joint-type-dependent
+        and the standard flow can't compute it).
+
+    Returns (ok, reason_if_not). When the chat agent sees `ok=False`,
+    the class is dropped from matches and the user gets a clear error
+    instead of a match card that opens an empty WT table.
+    """
+    if effective_t_c is None:
+        return True, None
+
+    if effective_t_c > 510:
+        return False, (
+            f"design T {effective_t_c:g}°C exceeds the 510°C cap in "
+            f"ASME B31.3 Table 302.3.5 (W-factor undefined above this "
+            f"for seamless / 100% RT welded pipe)"
+        )
+
+    cf = resolved.get("code_factors") or {}
+    stress_table = cf.get("stress_table")
+    if not stress_table:
+        return False, (
+            f"material {material} is not tabulated in ASME B31.3 "
+            f"Table A-1 — allowable stress unavailable"
+        )
+
+    s = wt_calc.lookup_stress(stress_table, effective_t_c)
+    if s is None:
+        return False, (
+            f"allowable stress unavailable for {material} at "
+            f"{effective_t_c:g}°C — outside the ASME B31.3 Table A-1 "
+            f"published range"
+        )
+    return True, None
+
+
 def _enumerate(
     rating_set: list[str],
     material_set: list[str],
@@ -694,15 +744,21 @@ def _enumerate(
     design_p_barg: Optional[float] = None,
     design_t_c: Optional[float] = None,
     max_cards: int = 60,
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], int, Optional[str]]:
     """Cartesian product of rating × material × CA, resolved to class
     codes. Combinations that don't fit §5.5 rules silently drop out.
 
-    When `design_p_barg` is provided, every candidate is filtered through
-    the P-T adequacy check — only classes that can sustain the design
-    point survive. The second element of the returned tuple is the count
-    of candidates rejected by the adequacy filter so the caller can
-    explain "no match" to the user.
+    Filters applied to each candidate:
+      • Design-pressure adequacy (`_is_adequate`) — when the user
+        supplied design_p_barg; rejects under-spec or over-spec.
+      • WT-calc feasibility (`_wt_calc_feasible`) — when the user
+        supplied (or backend can derive) design_t_c; rejects classes
+        whose material has no allowable stress at this T, or where
+        the W-factor is undefined.
+
+    Returns `(matches, inadequate_count, wt_unavailable_reason)`. The
+    chat reply uses `wt_unavailable_reason` to produce a specific
+    error message instead of a generic "no PMS" — see `_default_reply`.
 
     Dedup is by (rating, class_code): the §5.5 rules sometimes resolve
     two different material/CA pairs to the same class (e.g. CS + 6 mm
@@ -713,6 +769,7 @@ def _enumerate(
     seen_tuple: set[tuple[str, str, str]] = set()
     seen_class: set[tuple[str, str]] = set()
     inadequate_count = 0
+    wt_unavailable_reason: Optional[str] = None
     for r in rating_set:
         for m in material_set:
             for ca in ca_set:
@@ -728,22 +785,35 @@ def _enumerate(
                     continue
                 seen_class.add(class_key)
 
+                # Check 1 — rated pressure adequacy.
                 if design_p_barg is not None:
                     ok, _why = _is_adequate(r, m, design_p_barg, design_t_c)
                     if not ok:
                         inadequate_count += 1
                         continue
 
+                # Effective T the snapshot will use (inverse-interpolates
+                # from P when only P was supplied).
+                effective_t = pms_snapshot.effective_design_temp(
+                    r, m, design_p_barg, design_t_c,
+                )
+
+                # Check 2 — WT calc feasibility at the effective T.
+                # No match card if the calc can't actually run — better
+                # to show a clear error in the chat than let the user
+                # click through to an empty WT table.
+                if design_t_c is not None:
+                    ok, why = _wt_calc_feasible(resolved, m, effective_t)
+                    if not ok:
+                        inadequate_count += 1
+                        if wt_unavailable_reason is None:
+                            wt_unavailable_reason = why
+                        continue
+
                 # Apply the same customized-zone rename the snapshot
                 # builder uses, so the chat match card shows the same
-                # class code the InlinePMSPreview will. The "effective
-                # T" call mirrors `_seed_defaults` — when the user
-                # supplied only P, this inverse-interpolates T from
-                # the curve, so a P that lands in the high-T region
-                # (e.g. 5.5 barg @ ~425 °C on CS 150#) still triggers
-                # the rename correctly.
+                # class code the InlinePMSPreview will.
                 base = resolved["class_code"]
-                effective_t = pms_snapshot.effective_design_temp(r, m, design_p_barg, design_t_c)
                 display_code = pms_snapshot.customized_class_code(base, effective_t)
                 out.append({
                     "piping_class":        display_code,
@@ -755,8 +825,8 @@ def _enumerate(
                     "score":               1.0,
                 })
                 if len(out) >= max_cards:
-                    return out, inadequate_count
-    return out, inadequate_count
+                    return out, inadequate_count, wt_unavailable_reason
+    return out, inadequate_count, wt_unavailable_reason
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +873,45 @@ _BORDERLINE_NOTE_TEMPLATE = (
     "📝 **Note:** Please consult a technical engineer once and confirm this "
     "PMS is suitable for sustained operation before issuing the report."
 )
+
+
+def _build_wt_unavailable_reply(
+    *,
+    reason: str,
+    user_rating: Optional[str],
+    user_material: Optional[str],
+    design_t_c: Optional[float],
+    design_p_barg: Optional[float],
+) -> str:
+    """Hard-error reply used when the WT calc cannot run at the design
+    point (no allowable stress at this T, or W-factor undefined).
+
+    Skipping the match-card / "view details" flow is the point — clicking
+    through would just land the user on an empty WT table. Give them the
+    error and suggest concrete alternatives (lower T or hotter-service
+    material) directly in the chat reply.
+    """
+    pt_str = _fmt_pt_target(design_p_barg, design_t_c)
+    where = f"class **{user_rating}** {user_material}".strip()
+    if not user_rating or not user_material:
+        where = "the requested class"
+
+    return (
+        f"❌ **PMS cannot be generated for this design point** "
+        f"({pt_str}).\n\n"
+        f"For {where}, {reason}. Without an allowable stress at the "
+        f"design temperature, ASME B31.3 §304.1.2 Eq. 3a has no input "
+        f"to compute pipe wall thickness from.\n\n"
+        f"**Options:**\n"
+        f"• Lower the design temperature into the range where the "
+        f"material's stress curve is published (e.g. CS / LTCS in "
+        f"B31.3 Table A-1 ends around 510 °C).\n"
+        f"• Specify a material qualified for hot service — chromium-"
+        f"molybdenum alloy steel (e.g. P11 / P22), austenitic SS, or "
+        f"Inconel — whose stress curve extends to your design T.\n"
+        f"• Consult a technical engineer for a non-standard design "
+        f"(custom WT calc, project-specific allowable stress, etc.)."
+    )
 
 
 def _fmt_pt_target(design_p_barg: Optional[float], design_t_c: Optional[float]) -> str:
@@ -1065,8 +1174,9 @@ def chat(prompt: str, history: list[dict]) -> dict:
     service_str = ", ".join(filters["canonical_services"]) if filters["canonical_services"] else ""
 
     inadequate_count = 0
+    wt_unavailable_reason: Optional[str] = None
     if any_filter:
-        matched_classes, inadequate_count = _enumerate(
+        matched_classes, inadequate_count, wt_unavailable_reason = _enumerate(
             filters["rating_set"],
             filters["material_set"],
             filters["ca_set"],
@@ -1179,16 +1289,35 @@ def chat(prompt: str, history: list[dict]) -> dict:
             "design_temp_c": extracted["design_temp_c"],
         }
 
-    # When the design-condition adequacy filter wiped out all candidates,
-    # we override Claude's reply with a precise explanation — Claude has
-    # no visibility into the catalog's P-T envelope and would otherwise
-    # tell the user "here you go" alongside zero match cards.
+    # ── Reply-text override paths ──────────────────────────────────
+    # When the filter wiped out every candidate we override whatever
+    # Claude said with a precise explanation. Two distinct cases:
+    #   (a) WT calc impossible at design T (S / W unavailable) —
+    #       surface a "cannot generate" hard error so the user doesn't
+    #       click through to an empty WT table downstream.
+    #   (b) Pressure adequacy wiped everyone out — over- / under-spec
+    #       guidance (existing `no_match_due_to_design` path).
+    no_match_due_to_wt = bool(
+        not matched_classes
+        and wt_unavailable_reason
+        and extracted["design_temp_c"] is not None
+    )
     no_match_due_to_design = (
         not matched_classes
         and inadequate_count > 0
         and extracted["design_pressure_barg"] is not None
+        and not no_match_due_to_wt
     )
-    if no_match_due_to_design:
+
+    if no_match_due_to_wt:
+        reply = _build_wt_unavailable_reply(
+            reason=wt_unavailable_reason,
+            user_rating=rating,
+            user_material=material,
+            design_t_c=extracted["design_temp_c"],
+            design_p_barg=extracted["design_pressure_barg"],
+        )
+    elif no_match_due_to_design:
         reply = _default_reply(
             matched_classes, filters["field_suggestions"], any_filter,
             inadequate_count=inadequate_count,

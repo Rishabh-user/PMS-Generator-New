@@ -602,6 +602,24 @@ label.multi-select-option {
 }
 label.multi-select-option:hover { background: var(--accent-bg); }
 label.multi-select-option.selected { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+
+/* Backend-driven category header inside the service multi-select panel.
+   Set by initServiceMultiSelect() when /api/options/all returns
+   services_categories. Reads like an <optgroup label="...">. */
+.multi-select-group-header {
+    padding: 8px 12px 4px;
+    margin-top: 4px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted, #64748b);
+    border-top: 1px solid var(--border, #e2e8f0);
+}
+.multi-select-group-header:first-child {
+    margin-top: 0;
+    border-top: none;
+}
 label.multi-select-option > span { flex: 1; }
 /* Reset .form-group input width/padding/border on the row checkbox */
 .multi-select-option input[type="checkbox"] {
@@ -795,6 +813,33 @@ label.multi-select-option > span { flex: 1; }
     text-align: center;
     font-weight: 700;
     width: 40px;
+}
+
+/* Project Notes table — rendered at the bottom of Tab 4 (Components & Notes).
+   Backend-driven content from /api/resolve-class .project_notes. */
+.notes-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+    line-height: 1.5;
+}
+.notes-table td {
+    padding: 10px 12px;
+    border-top: 1px solid var(--border, #e2e8f0);
+    vertical-align: top;
+}
+.notes-table tr:first-child td {
+    border-top: none;
+}
+.notes-table .notes-num {
+    width: 40px;
+    text-align: center;
+    font-weight: 700;
+    color: var(--text-muted, #64748b);
+    background: #f8fafc;
+}
+.notes-table .notes-text {
+    color: var(--text, #0f172a);
 }
 
 /* Vertically merged MOC cell (Copper Fittings Data) — centre the text so

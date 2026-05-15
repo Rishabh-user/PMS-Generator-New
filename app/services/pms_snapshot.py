@@ -457,6 +457,23 @@ def build_pms_snapshot(
         logger.exception("wt_calc.derived_design_conditions failed: %s", e)
         derived_conditions = {}
 
+    # Project standard notes (the "NOTES" section at the bottom of the
+    # PMS Excel datasheet — IDs and text from `app/data/pms_notes.json`).
+    # Filtered by the current rating / material / service / T so notes
+    # with a `when` predicate only show when relevant. Single source of
+    # truth for the Excel exporter + page UI + future SPA consumers.
+    try:
+        project_notes = wt_calc.resolve_project_notes(
+            rating=rating,
+            material=material,
+            service=service or None,
+            design_temp_c=eff.get("design_temp_c"),
+            joint_type=eff.get("joint_type"),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("wt_calc.resolve_project_notes failed: %s", e)
+        project_notes = []
+
     # ── WT-calc availability ────────────────────────────────────
     # Some design points can't be calculated — typically when the
     # ASME B31.3 Table A-1 stress curve doesn't extend to the design
@@ -518,4 +535,9 @@ def build_pms_snapshot(
         # Tab 3 — branch chart already lives in
         # `code_factors.branch_chart` inside the spread-in resolved data.
         "materials_tab": materials_tab,
+        # Tab 4 — project standard notes (the "NOTES" section that
+        # appears in the Excel datasheet). Filtered by current
+        # rating / material / service / design T per each note's
+        # `when` predicate in pms_notes.json.
+        "project_notes": project_notes,
     }

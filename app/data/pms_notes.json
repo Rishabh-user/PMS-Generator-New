@@ -1,0 +1,45 @@
+{
+  "_note": "Project standard notes that appear at the bottom of every PMS report (Excel + on-screen Tab 4). Each note has a `when` condition that decides whether it shows for the current PMS — 'always' for unconditional notes; otherwise an object with simple predicates the resolver in wt_calc.resolve_project_notes() evaluates. Add / reword / re-order without any code change.",
+  "notes": [
+    {
+      "id": 1,
+      "text": "PMS to be read in conjunction with Project Piping Design Basis, and Valve Material Specification.",
+      "when": "always"
+    },
+    {
+      "id": 2,
+      "text": "Weld Joint Factor for welded pipe shall be as per ASME B 31.3.",
+      "when": "always"
+    },
+    {
+      "id": 3,
+      "text": "Welded fittings shall be 100% radiographed.",
+      "when": "always"
+    },
+    {
+      "id": 4,
+      "text": "Spectacle blinds and spacer sizes and rating that are not available in ASME B 16.48 shall be as per manuf. standard. Design shall be submitted to Company for review and approval.",
+      "when": "always"
+    },
+    {
+      "id": 5,
+      "text": "Maximum temperature limit for all Soft Seat Ball Valve shall be 250°C.",
+      "when": "always"
+    },
+    {
+      "id": 6,
+      "text": "Wafer check valve to be avoided, unless the available space constraint does not allow normal check valve.",
+      "when": "always"
+    },
+    {
+      "id": 7,
+      "text": "Wafer type Butterfly Valve may be used only in water service and shall not be used in hydrocarbon service.",
+      "when": "always"
+    },
+    {
+      "id": 8,
+      "text": "Two jackscrew, 180 degree apart shall be provided in one of the flanges for all orifice flange and specified spectacle blind assemblies.",
+      "when": "always"
+    }
+  ]
+}

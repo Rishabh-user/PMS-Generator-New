@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PMS Generator</title>
     <link rel="icon" type="image/png" href="/static/images/logo.png">
-    <link rel="stylesheet" href="/static/css/styles.css?v=29">
+    <link rel="stylesheet" href="/static/css/styles.css?v=31">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -365,6 +365,18 @@
                             <div class="kv-list" id="rSpectacleCard"></div>
                         </div>
                     </div>
+
+                    <!-- Project standard notes — the "NOTES" section that
+                         appears on the Excel datasheet. Backend-filtered
+                         from `app/data/pms_notes.json` (per-note `when`
+                         predicate decides whether each entry shows for
+                         the current rating / material / service / T). -->
+                    <div class="card" style="margin-top:24px">
+                        <div class="card-title-underline">Notes</div>
+                        <table class="notes-table" id="rProjectNotesTable">
+                            <tbody></tbody>
+                        </table>
+                    </div>
                 </div>
 
                 <!-- ============================================================
@@ -393,6 +405,6 @@
 
     <footer class="footer-bar"></footer>
 
-    <script src="/static/js/app.js?v=62"></script>
+    <script src="/static/js/app.js?v=65"></script>
 </body>
 </html>
