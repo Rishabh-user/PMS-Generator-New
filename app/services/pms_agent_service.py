@@ -92,6 +92,35 @@ def _standard_for_rating(rating: str) -> str:
     return _NON_B165_RATING_STANDARDS.get(rating, "ASME B16.5")
 
 
+def _build_disabled_rating_reply(disabled_requested: list[str]) -> str:
+    """Reply when the user asked ONLY for ratings the system currently
+    doesn't generate (e.g. 5000# / 10000#). Cites the engineering
+    standard each disabled rating actually belongs to so the user
+    understands *why* they're being deferred."""
+    pretty = ", ".join(disabled_requested)
+    is_one = len(disabled_requested) == 1
+    cite_lines = "\n".join(
+        f"  • **{r}** — {_standard_for_rating(r)}"
+        for r in disabled_requested
+    )
+    if is_one:
+        head = (
+            f"❌ **PMS generation for {pretty} is not available right now.**"
+        )
+    else:
+        head = (
+            f"❌ **PMS generation for {pretty} is not available right now.**"
+        )
+    return (
+        f"{head}\n\n"
+        f"These ratings sit outside the ASME B16.5 catalogue this system "
+        f"covers today:\n"
+        f"{cite_lines}\n\n"
+        f"Try a standard ASME B16.5 rating instead — **150#, 300#, 600#, "
+        f"900#, 1500#,** or **2500#** — and I can generate that PMS for you."
+    )
+
+
 def reload_catalog() -> None:
     _catalog.cache_clear()
 
@@ -487,17 +516,28 @@ def _resolve_filter_sets(extracted: dict) -> dict:
     canonical_services, _service_suggestions = _validate_list("service", extracted["services"])
 
     cat = _catalog()
+    disabled = cat.get("disabled_ratings") or set()
     # Default to entire catalog when filter is empty for that dimension.
-    rating_set = canonical_ratings or list(cat["ratings"])
+    # IMPORTANT: when expanding the catalog-wide default for ratings, we
+    # silently drop disabled ratings (5000# / 10000# today). The chat
+    # agent doesn't generate PMS for those right now, so they must never
+    # appear as match cards from an unfiltered query. If the user *did*
+    # explicitly list them in `canonical_ratings`, we keep them here so
+    # the chat() short-circuit can detect and reject the request with a
+    # clear "not supported" message instead of silently dropping them.
+    rating_set = canonical_ratings or [r for r in cat["ratings"] if r not in disabled]
     material_set = canonical_materials or list(cat["materials"])
     ca_set = canonical_cas or list(cat["corrosion_allowances"])
 
-    # Apply numeric rating range.
+    # Apply numeric rating range. Also strip disabled ratings out of the
+    # range expansion — e.g. "above 1500" must NOT include 5000# / 10000#.
     rating_set = _apply_rating_range(
         rating_set,
         extracted["rating_min"], extracted["rating_min_inclusive"],
         extracted["rating_max"], extracted["rating_max_inclusive"],
     )
+    if not canonical_ratings:
+        rating_set = [r for r in rating_set if r not in disabled]
 
     # Apply material exclusions (only useful when material isn't already
     # explicitly listed; if the user said "DSS" they meant DSS).
@@ -934,14 +974,22 @@ def _design_caution_reason(
     design point is comfortably inside standard service.
 
     Rules in priority order (first match wins):
-      • Any design T above the standard envelope cap (300 °C) →
-        "new-spec" zone — the PMS is renamed and the WT calc switches
-        to single-point mode. Engineer should review before issuing.
       • Plain CS / LTCS at T > 370 °C → creep / graphitization
         (B31.3 creep onset for CS; B16.5 Note (1) caps prolonged use
-        at 425 °C). This is a stricter sub-case of the above.
-      • Any material at T within 10 °C of its catalogued max →
-        at the very edge of the published P-T envelope.
+        at 425 °C). Fires whenever CS is in the match set because the
+        warning is material-keyed — it tells the user "if you pick the
+        CS variant, beware of creep" regardless of how many other
+        materials are also shown.
+      • Any design T above the standard envelope cap (300 °C) →
+        "new-spec" zone — the PMS is renamed and the WT calc switches
+        to single-point mode. Fires universally because T > 300 °C is
+        a project-policy line, not material-specific.
+      • Any material at T within 10 °C of its catalogued max → at the
+        very edge of the published P-T envelope. ONLY fires when the
+        user has narrowed to a single class — otherwise the warning
+        would key off the shortest-curve material in the match set
+        (Copper @ 100 °C, GRE @ 100 °C, CPVC @ 65 °C) and look
+        misleading when the user is still browsing many materials.
     """
     if not matches or design_t_c is None:
         return None
@@ -963,21 +1011,24 @@ def _design_caution_reason(
             "0–300 °C envelope — this is a customized (new-spec) PMS"
         )
 
-    # Generic "edge of published curve" check.
-    for m in matches:
+    # Generic "edge of published curve" check — only run when the user
+    # has narrowed to one specific class. With multiple materials still
+    # in play, this branch would always fire off whichever material has
+    # the shortest curve (e.g. Copper @ 100 °C) and produce a confusing
+    # warning that doesn't match the class the user is actually picking.
+    if len(matches) == 1:
+        m = matches[0]
         pt = pt_lookup.find(m.get("rating") or "", m.get("material") or "")
-        if not pt or pt.get("pending"):
-            continue
-        temps = pt.get("temperatures_c") or []
-        if not temps:
-            continue
-        curve_max = max(temps)
-        if design_t_c >= curve_max - 10:
-            return (
-                f"design T = {design_t_c:g} °C is within 10 °C of the "
-                f"catalogued curve maximum ({curve_max:g} °C) — rated "
-                f"pressure derates sharply at this end"
-            )
+        if pt and not pt.get("pending"):
+            temps = pt.get("temperatures_c") or []
+            if temps:
+                curve_max = max(temps)
+                if design_t_c >= curve_max - 10:
+                    return (
+                        f"design T = {design_t_c:g} °C is within 10 °C of the "
+                        f"catalogued curve maximum ({curve_max:g} °C) — rated "
+                        f"pressure derates sharply at this end"
+                    )
 
     return None
 
@@ -1149,10 +1200,87 @@ def chat(prompt: str, history: list[dict]) -> dict:
     extracted = _extract_filters_with_claude(prompt, history)
     filters = _resolve_filter_sets(extracted)
 
-    # Note: `disabled_ratings` only disables the on-screen dropdown.
-    # The chat agent still generates PMS for those ratings — but the
-    # caution / borderline messages cite the correct standard for
-    # the rating (see `_standard_for_rating` and `_design_caution_reason`).
+    # ── Disabled-rating gate ──────────────────────────────────────────
+    # 5000# / 10000# (API 6A series) are currently outside this system's
+    # scope. The dropdown UI hides them; the chat agent must match that
+    # contract. Three cases:
+    #
+    #   1. User explicitly asked ONLY for disabled rating(s) →
+    #      short-circuit with a "not available" reply citing the
+    #      standard each disabled rating belongs to. No enumeration,
+    #      no match cards.
+    #
+    #   2. User mixed disabled + valid ratings (e.g. "600# and 5000#") →
+    #      drop the disabled ratings, proceed with the valid ones, and
+    #      attach a one-line note explaining what we dropped.
+    #
+    #   3. User gave no rating filter at all → `_resolve_filter_sets`
+    #      already stripped disabled ratings from the catalog-wide
+    #      default, so no extra work is needed here.
+    cat = _catalog()
+    disabled_set: set[str] = cat.get("disabled_ratings") or set()
+    requested = list(filters["canonical_ratings"])
+    disabled_requested = [r for r in requested if r in disabled_set]
+    allowed_requested = [r for r in requested if r not in disabled_set]
+    disabled_note: Optional[str] = None
+
+    if disabled_requested and not allowed_requested:
+        # Case 1: every rating the user asked for is disabled. Reply
+        # immediately — don't enumerate, don't show cards.
+        reply_text = _build_disabled_rating_reply(disabled_requested)
+        return {
+            "reply": reply_text,
+            "interpreted": {
+                "piping_class":         None,
+                "rating":               disabled_requested[0],
+                "material":             None,
+                "corrosion_allowance":  None,
+                "service":              None,
+                "design_temp_c":        extracted["design_temp_c"],
+                "design_pressure_barg": extracted["design_pressure_barg"],
+                "intent":               extracted["intent"],
+            },
+            "matched_classes":     [],
+            "suggested_action":    {
+                "type": "none",
+                "piping_class": None,
+                "material": None,
+                "corrosion_allowance": None,
+                "service": None,
+                "design_pressure_barg": extracted["design_pressure_barg"],
+                "design_temp_c":        extracted["design_temp_c"],
+            },
+            "slots":               {
+                "rating": disabled_requested[0],
+                "material": None,
+                "corrosion_allowance": None,
+                "service": None,
+                "missing": ["rating", "material", "corrosion_allowance", "service"],
+                "complete": False,
+                "ratings": disabled_requested,
+                "materials": [],
+                "corrosion_allowances": [],
+                "services": [],
+                "exclusions": [],
+                "rating_min": extracted["rating_min"],
+                "rating_max": extracted["rating_max"],
+            },
+            "field_suggestions":   [],
+            "available_values":    {},
+            "allow_bulk_download": False,
+            "_meta":               extracted.get("_meta") or {},
+        }
+
+    if disabled_requested and allowed_requested:
+        # Case 2: drop the disabled ratings and proceed with the rest.
+        # Keep a one-line note so we can prepend it to the eventual reply.
+        filters["canonical_ratings"] = allowed_requested
+        filters["rating_set"] = [r for r in filters["rating_set"] if r not in disabled_set]
+        dropped = ", ".join(disabled_requested)
+        disabled_note = (
+            f"ℹ️ Note: **{dropped}** is not available right now — "
+            f"continuing with the rest of your request."
+        )
 
     # Did the user actually constrain anything (catalog OR numeric range
     # OR exclusion flag OR design conditions)? Design pressure on its own
@@ -1336,13 +1464,25 @@ def chat(prompt: str, history: list[dict]) -> dict:
             user_material=material,
         )
 
-    # When the chat agent found a match but the design point is at the
-    # edge of standard service (e.g. CS at 400°C, in the creep zone), we
-    # append a borderline warning. The class IS adequate, but a human
-    # engineer should sign off before the PMS is issued. This fires
-    # whether the reply came from Claude or _default_reply, so the
-    # warning is always visible.
-    if matched_classes:
+    # When the chat agent found a match AND the user actually pinned a
+    # P-T point, check whether the design point sits at the edge of
+    # standard service (e.g. CS at 400°C, in the creep zone) and append a
+    # borderline warning. The class IS adequate, but a human engineer
+    # should sign off before the PMS is issued. This fires whether the
+    # reply came from Claude or _default_reply, so the warning is always
+    # visible.
+    #
+    # IMPORTANT: We only run this check when the user gave a real design
+    # T or design P. If both are null, `effective_design_temp` falls back
+    # to the 300 °C envelope cap — which would then "borderline" against
+    # any short-curve material in the match set (Copper @ 100 °C, GRE @
+    # 100 °C, CPVC @ 65 °C, etc.). That warning is misleading because
+    # the user never specified 300 °C; we just defaulted there internally.
+    user_specified_pt = (
+        extracted["design_pressure_barg"] is not None
+        or extracted["design_temp_c"] is not None
+    )
+    if matched_classes and user_specified_pt:
         # Use the effective T the snapshot will see — when the user
         # supplied only P, this inverse-interpolates from the curve
         # so the caution checks the *real* design T (e.g. P=5.5 barg
@@ -1362,6 +1502,12 @@ def chat(prompt: str, history: list[dict]) -> dict:
                 f"{reply}\n\n"
                 f"{_BORDERLINE_NOTE_TEMPLATE.format(reason=caution_reason, standard=standard)}"
             )
+
+    # Case 2 from the disabled-rating gate: user mixed disabled +
+    # valid ratings. Prepend a one-line note so they know which
+    # rating(s) we dropped without burying it under the match cards.
+    if disabled_note:
+        reply = f"{disabled_note}\n\n{reply}"
 
     return {
         "reply": reply,
