@@ -1,0 +1,9 @@
+# System packages installed by Render's Native Python buildpack during
+# the build phase (one per line, comments start with #).
+#
+# LibreOffice is required by `app/services/pdf_exporter.py` — it shells
+# out to `soffice --headless --convert-to pdf` to render the canonical
+# .xlsx datasheet as a PDF. Without this package the /api/export/pdf
+# endpoint returns 503 with an "install LibreOffice" hint, but the rest
+# of the API (Excel export, chat agent, computation) keeps working.
+libreoffice
