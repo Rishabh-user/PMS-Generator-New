@@ -1,0 +1,23 @@
+# Keep the build context small + the final image lean. Without this,
+# docker COPY would pull the local dev venv (hundreds of MB) and any
+# test artifacts into the image — making the image both huge and
+# inconsistent with the clean install from requirements.txt that we
+# actually want at runtime.
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.git/
+.gitignore
+.env
+.env.*
+.claude/
+.idea/
+.vscode/
+*.xlsx
+*.pdf
+*.log
+README.md
