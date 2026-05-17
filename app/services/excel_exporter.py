@@ -234,8 +234,14 @@ def _ds_label_value_row(ws, row, label, value, total_cols, *, value_bold=False, 
 def _ds_build_header(ws, row, ctx, total_cols):
     logo_cols = 2
 
+    # The logo column (A:B) gets ONE merge spanning the full header height
+    # at the end of this function. The per-row placeholder writes below
+    # use span=1 (no per-row merge) — if they spanned A:B per row, the
+    # final footprint merge would overlap them and Excel would flag the
+    # workbook with a "content recovery" warning when opened.
+
     # Title row
-    _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
+    _ds_write(ws, row, 1, "", span=1, fill=None, align=DS_CENTER)
     _ds_write(ws, row, logo_cols + 1, "PIPING MATERIAL SPECIFICATION",
               span=total_cols - logo_cols - 2, font=DS_FONT_TITLE, align=DS_CENTER)
     _ds_write(ws, row, total_cols - 1, "Rev :",
@@ -252,69 +258,55 @@ def _ds_build_header(ws, row, ctx, total_cols):
     spans = [seg, seg, seg, seg, total_cols - cols[4] + 1]
     labels = ["Piping Class", "Material", "C.A", "Mill Tol", "Sheet No."]
 
-    _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
+    _ds_write(ws, row, 1, "", span=1, fill=None, align=DS_CENTER)
     for c, lbl, sp in zip(cols, labels, spans):
         _ds_write(ws, row, c, lbl, span=sp,
                   font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_CENTER)
     row += 1
 
-    # Value row
+    # Value row — six sub-cells under five headers.
+    #
+    # The "Piping Class" header spans TWO value sub-cells: the class code
+    # on the left, the rating on the right. The remaining four headers
+    # (Material / C.A / Mill Tol / Sheet No.) each have one sub-cell.
+    # This matches the project's reference PMS layout:
+    #   ┌──────────── Piping Class ─────────────┬─ Material ─┬─ C.A ─┬─ Mill Tol ─┬─ Sheet No. ─┐
+    #   │   A1   │   150#                       │     CS     │ 3 mm  │   12.5%    │     A1      │
+    #   └────────┴──────────────────────────────┴────────────┴───────┴────────────┴─────────────┘
     is_tubing_cls = _ds_is_tubing(ctx["class_code"], ctx["material"])
     displayed_code = _ds_displayed_code(ctx["class_code"], ctx["material"], ctx.get("service"))
     mill = "0.0%" if is_tubing_cls else "12.5%"
     rating_disp = "—" if is_tubing_cls else ctx["rating"]
-    values = [displayed_code, rating_disp, ctx["material"], ctx["ca"], mill]
     sheet_no = displayed_code
 
-    _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
-    for c, v, sp in zip(cols, values, spans):
-        _ds_write(ws, row, c, v, span=sp, font=DS_FONT_VAL_B, align=DS_CENTER)
-    # Replace the last cell (Sheet No.) with the sheet value
-    _ds_write(ws, row, cols[4], sheet_no, span=spans[4], font=DS_FONT_VAL_B, align=DS_CENTER)
-    row += 1
+    # Split the "Piping Class" header span into two equal sub-cells.
+    pc_left_span  = spans[0] // 2
+    pc_right_span = spans[0] - pc_left_span
 
-    # ── Design Conditions row — Design P / Design T / MDMT / Joint Type
-    # The values come from `ctx["design_p"] / design_t / mdmt / joint_type`
-    # which the public `build_workbook()` populates from either the user-
-    # supplied values OR the snapshot's effective_design_conditions
-    # (the cap-at-300 / curve-interpolated seeding). Showing them here
-    # so the engineer can see exactly which (P, T, MDMT, joint) the
-    # snapshot was built against — particularly important for
-    # user-customized (New-spec-) PMS where the design point isn't
-    # the standard cold-end / hottest-point default.
-    def _fmt_num(v, dp):
-        if v is None:
-            return "—"
-        try:
-            return f"{round(float(v), dp):g}"
-        except (TypeError, ValueError):
-            return "—"
-
-    design_p_str = f"{_fmt_num(ctx.get('design_p'), 1)} barg"
-    design_t_str = f"{_fmt_num(ctx.get('design_t'), 0)} °C"
-    mdmt_str     = f"{_fmt_num(ctx.get('mdmt'),     0)} °C"
-    joint_str    = ctx.get("joint_type") or "—"
-
-    # Four label/value cells across the right side — same column splits
-    # as the Class/Material row above so the header reads as a grid.
-    dc_labels = ["Design P", "Design T", "MDMT", "Joint Type"]
-    dc_values = [design_p_str, design_t_str, mdmt_str, joint_str]
-    # Use 4 of the 5 segments (Sheet No. column is omitted on this row).
-    _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
-    for c, lbl, sp in zip(cols[:4], dc_labels, spans[:4]):
-        _ds_write(ws, row, c, lbl, span=sp,
-                  font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_CENTER)
-    # Stretch the last segment to span the remaining width
-    _ds_write(ws, row, cols[4], "", span=spans[4],
-              font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_CENTER)
-    row += 1
-    _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
-    for c, v, sp in zip(cols[:4], dc_values, spans[:4]):
-        _ds_write(ws, row, c, v, span=sp, font=DS_FONT_VAL_B, align=DS_CENTER)
-    _ds_write(ws, row, cols[4], "", span=spans[4], font=DS_FONT_VAL_B, align=DS_CENTER)
+    _ds_write(ws, row, 1, "", span=1, fill=None, align=DS_CENTER)
+    # Piping Class — left half (class code) + right half (rating).
+    _ds_write(ws, row, cols[0],                 displayed_code,
+              span=pc_left_span,  font=DS_FONT_VAL_B, align=DS_CENTER)
+    _ds_write(ws, row, cols[0] + pc_left_span,  rating_disp,
+              span=pc_right_span, font=DS_FONT_VAL_B, align=DS_CENTER)
+    # Material / C.A / Mill Tol / Sheet No. each go under their header.
+    _ds_write(ws, row, cols[1], ctx["material"], span=spans[1],
+              font=DS_FONT_VAL_B, align=DS_CENTER)
+    _ds_write(ws, row, cols[2], ctx["ca"],       span=spans[2],
+              font=DS_FONT_VAL_B, align=DS_CENTER)
+    _ds_write(ws, row, cols[3], mill,            span=spans[3],
+              font=DS_FONT_VAL_B, align=DS_CENTER)
+    _ds_write(ws, row, cols[4], sheet_no,        span=spans[4],
+              font=DS_FONT_VAL_B, align=DS_CENTER)
     row += 1
 
     # Design Code / Service / Branch Chart
+    #
+    # NOTE: the Design P / Design T / MDMT / Joint Type row that used to
+    # live here has been REMOVED to match the project's reference PMS
+    # layout. Those values are still available to the engineer in the
+    # PMS Generator UI (Tab 1, "Design Conditions") and in the JSON
+    # snapshot — they just don't repeat in the Excel header anymore.
     has_nace = "NACE" in (ctx["material"] or "").upper()
     design_code = ("—" if is_tubing_cls else
                    ("ASME B 31.3, NACE-MR-01-75 / ISO-15156-1/2/3" if has_nace else "ASME B 31.3"))
@@ -323,7 +315,12 @@ def _ds_build_header(ws, row, ctx, total_cols):
         bc_label = "—"
     else:
         title = branch.get("title", "") or "Chart 1"
+        # Convert "CHART-1 (CS, LTCS, SS, DSS, SDSS)" → "Chart 1".
+        # The leading "CHART-" prefix becomes "Chart " (with a space),
+        # and the parenthetical material-group suffix is dropped because
+        # the reference PMS keeps the Branch Chart label compact.
         title = re.sub(r"^CHART[-\s]*", "Chart ", title)
+        title = re.sub(r"\s*\(.*?\)\s*$", "", title)
         bc_label = f"Ref. APPENDIX-1, {title}"
 
     for label, value in [
@@ -331,7 +328,7 @@ def _ds_build_header(ws, row, ctx, total_cols):
         ("Service:",      ctx.get("service") or "—"),
         ("Branch Chart:", bc_label),
     ]:
-        _ds_write(ws, row, 1, "", span=logo_cols, fill=None, align=DS_CENTER)
+        _ds_write(ws, row, 1, "", span=1, fill=None, align=DS_CENTER)
         _ds_write(ws, row, logo_cols + 1, label, span=seg,
                   font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
         _ds_write(ws, row, logo_cols + 1 + seg, value, span=total_cols - (logo_cols + seg),
@@ -346,20 +343,79 @@ def _ds_build_header(ws, row, ctx, total_cols):
     except Exception:
         pass
 
-    # Embed the logo image (PNG) in the merged left cell.
+    # Embed the logo image (PNG) in the merged A1:B(N) cell.
+    #
+    # Two engineering rules:
+    #   1. Preserve the logo's native aspect ratio — never stretch it.
+    #      (The SP Energy logo is 1630×363 px, ratio ≈ 4.49; the old
+    #      hard-coded 170×90 squashed it width-wise and stretched it
+    #      vertically.)
+    #   2. Centre the image both vertically and horizontally inside
+    #      the merged cell, leaving a small visual margin.
+    #
+    # We compute the pixel size of the merged area from the column
+    # widths and row heights we've already set, then build a
+    # OneCellAnchor anchored at A1 with EMU offsets that visually
+    # centre the image.
+    for r in range(header_row_start, header_row_end + 1):
+        if (ws.row_dimensions[r].height or 0) < 22:
+            ws.row_dimensions[r].height = 22
+
     from openpyxl.drawing.image import Image as XLImage
     logo_path = settings.static_dir / "images" / "logo.png"
     if logo_path.exists():
         try:
+            from openpyxl.drawing.spreadsheet_drawing import (
+                OneCellAnchor, AnchorMarker,
+            )
+            from openpyxl.drawing.xdr import XDRPositiveSize2D
+            from openpyxl.utils.units import pixels_to_EMU
+            from PIL import Image as PILImage
+
+            # Native logo dimensions → aspect ratio (avoids stretching).
+            with PILImage.open(logo_path) as p:
+                native_w, native_h = p.size
+            aspect = native_w / native_h if native_h else 1.0
+
+            # Approximate pixel dimensions of the merged A1:B(N) area.
+            # Column widths are set in `build_workbook`: A=22, B=10
+            # (char units). Excel renders ~7 px per char + ~5 px padding.
+            # Row heights minimum = 22 points; 1 point ≈ 4/3 px at 96 DPI.
+            col_a_px = 22 * 7 + 5
+            col_b_px = 10 * 7 + 5
+            area_w_px = col_a_px + col_b_px
+            n_rows = header_row_end - header_row_start + 1
+            area_h_px = int(n_rows * 22 * 4 / 3)
+
+            # Scale to fit inside ~88% of the area, preserving aspect.
+            margin = 0.88
+            target_w = int(area_w_px * margin)
+            target_h = int(target_w / aspect)
+            if target_h > area_h_px * margin:
+                target_h = int(area_h_px * margin)
+                target_w = int(target_h * aspect)
+
+            # Centring offsets within the merged cell.
+            offset_x_px = (area_w_px - target_w) // 2
+            offset_y_px = (area_h_px - target_h) // 2
+
             img = XLImage(str(logo_path))
-            img.width  = 170
-            img.height = 90
-            ws.add_image(img, f"A{header_row_start}")
+            img.anchor = OneCellAnchor(
+                _from=AnchorMarker(
+                    col=0,                       # column A (0-indexed)
+                    colOff=pixels_to_EMU(offset_x_px),
+                    row=header_row_start - 1,    # row 1 → index 0
+                    rowOff=pixels_to_EMU(offset_y_px),
+                ),
+                ext=XDRPositiveSize2D(
+                    cx=pixels_to_EMU(target_w),
+                    cy=pixels_to_EMU(target_h),
+                ),
+            )
+            ws.add_image(img)
         except Exception:
+            # Best-effort: drop the logo rather than fail the export.
             pass
-    for r in range(header_row_start, header_row_end + 1):
-        if (ws.row_dimensions[r].height or 0) < 22:
-            ws.row_dimensions[r].height = 22
 
     return row
 
@@ -478,11 +534,11 @@ def _ds_build_pipe_data(ws, row, ctx, total_cols):
 
     sizes = [_ds_fmt_nps(r.get("nps_decimal") if r.get("nps_decimal") is not None
                                               else r["nps"]) for r in wt_rows]
-    _data_row("Size (in)", sizes)
+    _data_row("Size(in)", sizes)
 
     # O.D. row — shown for all except CPVC
     if not is_cpvc:
-        _data_row("O.D. mm", [_ds_fmt(r["od_mm"], 1) for r in wt_rows])
+        _data_row("O.D.mm", [_ds_fmt(r["od_mm"], 1) for r in wt_rows])
 
     if is_gre:
         # GRE: ID + WT from the dim file (project-supplied values)
@@ -588,7 +644,7 @@ def _ds_build_pipe_data_tubing(ws, row, ctx, total_cols):
             _ds_write(ws, row, 2 + i, v, font=DS_FONT_VAL, align=DS_CENTER)
         row += 1
 
-    _data_row("Size (in)",  [_ds_fmt_nps(r["nps_decimal"]) for r in nps_rows])
+    _data_row("Size(in)",   [_ds_fmt_nps(r["nps_decimal"]) for r in nps_rows])
     _data_row("Sch. (Thk)", [_ds_fmt(r.get("wt_mm"), 3)    for r in nps_rows])
     row = _ds_label_value_row(ws, row, "MOC",      pipe_moc, total_cols, value_bold=True)
     row = _ds_label_value_row(ws, row, "Ends",     "PE", total_cols)
@@ -600,7 +656,7 @@ def _ds_build_fittings_tubing(ws, row, ctx, total_cols):
     nps_rows = _nps_rows(ctx["material"], ctx.get("service"))
     data_cols = total_cols - 1
     row = _ds_section_row(ws, row, "Fittings Data", total_cols)
-    _ds_write(ws, row, 1, "Size (in)", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
+    _ds_write(ws, row, 1, "Size(in)", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
     for i in range(data_cols):
         v = _ds_fmt_nps(nps_rows[i]["nps_decimal"]) if i < len(nps_rows) else ""
         _ds_write(ws, row, 2 + i, v, font=DS_FONT_VAL, align=DS_CENTER)
@@ -844,7 +900,16 @@ def _ds_build_flange(ws, row, ctx, total_cols):
     elif _ds_is_galv(material):
         ftype_sm, ftype_lg, merged = "Screwed (SCRD)", "WN", False
     else:
-        ftype_sm, ftype_lg, merged = "WN", "WN", False
+        # Standard B16.5 weld-neck flange. Pull the full descriptive
+        # text straight from `flange_specs.flange_type()` (already
+        # resolved into `ctx["flange_extras"]["type"]["type"]`) so the
+        # Excel TYPE row matches what the SPA's Components tab shows —
+        # e.g. "Weld Neck per ASME B 16.5, Butt Welding ends per
+        # ASME B 16.25" (with the NPS-26+ note appended for ratings
+        # ≥ 600#). Single source of truth — UI and Excel stay aligned.
+        weld_neck_text = ((fx.get("type") or {}).get("type")
+                          or "Weld Neck per ASME B 16.5, Butt Welding ends per ASME B 16.25")
+        ftype_sm, ftype_lg, merged = weld_neck_text, weld_neck_text, True
 
     data_cols = total_cols - 1
     if merged:
