@@ -3,7 +3,19 @@
 #
 # LibreOffice is required by `app/services/pdf_exporter.py` — it shells
 # out to `soffice --headless --convert-to pdf` to render the canonical
-# .xlsx datasheet as a PDF. Without this package the /api/export/pdf
+# .xlsx datasheet as a PDF. Without these packages the /api/export/pdf
 # endpoint returns 503 with an "install LibreOffice" hint, but the rest
 # of the API (Excel export, chat agent, computation) keeps working.
-libreoffice
+#
+# IMPORTANT: we install ONLY `libreoffice-calc` (≈ 200 MB), not the full
+# `libreoffice` meta-package (≈ 600 MB which often exceeds Render's
+# build-phase ephemeral-disk budget and fails silently). libreoffice-calc
+# pulls in libreoffice-core as a dependency, which provides the `soffice`
+# binary at /usr/bin/soffice — exactly where pdf_exporter probes for it.
+libreoffice-calc
+
+# Fallback fonts so the PDF renders the same on the server as on dev
+# machines. Tiny (~10 MB combined) but eliminates "missing font →
+# Times-Roman substitute" surprises in the rendered output.
+fonts-liberation
+fonts-dejavu-core

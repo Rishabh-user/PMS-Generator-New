@@ -145,21 +145,29 @@ def build_pdf(
         # --headless     no GUI
         # --norestore    don't try to recover the last session
         # --nolockcheck  skip the .~lock check (we own this tempdir)
+        # -env:UserInstallation  point soffice's per-user config dir at
+        #                a tempdir we own. Default is $HOME/.config/
+        #                libreoffice which (on locked-down hosts like
+        #                Render's runtime user) isn't writable; without
+        #                this override soffice can fail to start or hang
+        #                on first run while trying to write its profile.
         # --convert-to pdf  the conversion target
         # --outdir       write the PDF here
+        user_profile_dir = tmpdir / "lo_profile"
         result = subprocess.run(
             [
                 soffice,
                 "--headless",
                 "--norestore",
                 "--nolockcheck",
+                f"-env:UserInstallation=file://{user_profile_dir}",
                 "--convert-to", "pdf",
                 "--outdir", str(tmpdir),
                 str(xlsx_path),
             ],
             capture_output=True,
             text=True,
-            timeout=90,
+            timeout=120,
         )
         if result.returncode != 0:
             raise LibreOfficeConversionError(
