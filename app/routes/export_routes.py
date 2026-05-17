@@ -61,8 +61,9 @@ def export_excel(req: ExcelRequest):
 def export_pdf(req: ExcelRequest):
     """PDF rendering of the same datasheet. Reuses /excel's request
     shape so the SPA only has to swap the URL. The PDF is produced by
-    converting the canonical .xlsx via LibreOffice headless mode — see
-    `pdf_exporter.build_pdf` for the dependency setup."""
+    walking the canonical Workbook (from `excel_exporter.build_workbook_obj`)
+    and translating its cells / merges / styles into a ReportLab Table —
+    pure Python, no LibreOffice or other system dependency."""
     try:
         buf, filename = pdf_exporter.build_pdf(
             rating=req.rating,
@@ -76,14 +77,6 @@ def export_pdf(req: ExcelRequest):
         )
     except class_resolver.ResolutionError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
-    except pdf_exporter.LibreOfficeMissingError as e:
-        # 503 — the service is temporarily/permanently unavailable on this
-        # host, but the rest of the API works. Surface a helpful install
-        # hint so the operator can fix it without reading the logs.
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    except pdf_exporter.LibreOfficeConversionError as e:
-        # 500 — LibreOffice ran but the conversion didn't succeed.
-        raise HTTPException(status_code=500, detail=str(e)) from e
 
     return StreamingResponse(
         buf,

@@ -1099,7 +1099,7 @@ def _ds_build_notes(ws, row, ctx, total_cols):
 # ──────────────────────────────────────────────────────────────────────
 # Public entry — Datasheet-style workbook
 # ──────────────────────────────────────────────────────────────────────
-def build_workbook(
+def build_workbook_obj(
     *,
     rating: str,
     material: str,
@@ -1109,8 +1109,14 @@ def build_workbook(
     design_t_c: float,
     mdmt_c: float,
     joint_type: str,
-) -> tuple[io.BytesIO, str]:
-    """Produce a Datasheet-style xlsx for the given inputs.
+) -> tuple["Workbook", str]:
+    """Build the Datasheet-style Workbook in memory without serialising.
+
+    Returns (wb, class_code). Callers that need the xlsx bytes use
+    `build_workbook()` (thin wrapper below); callers that want to
+    inspect cells / styles / merges to render another format (e.g.
+    `pdf_exporter` → ReportLab) call this directly to avoid the
+    save → load round-trip.
 
     Architecture: this function does NO engineering math itself. It
     calls `pms_snapshot.build_pms_snapshot()` — the single source of
@@ -1121,7 +1127,8 @@ def build_workbook(
     Consequence: every value in the downloaded Excel matches what the
     SPA renders on screen, by construction. Future changes to the
     B31.3 calc engine, flag rules, materials tab, etc. reflect in the
-    Excel automatically — no parallel updates required."""
+    Excel (and the PDF, which is rendered from this same workbook)
+    automatically — no parallel updates required."""
 
     # ── 1. Build the canonical snapshot — same as /api/compute-pms ──
     snapshot = pms_snapshot.build_pms_snapshot(
@@ -1257,6 +1264,29 @@ def build_workbook(
     ws.print_options.horizontalCentered = True
     ws.print_area = f"A1:{last_col_letter}{final_row}"
 
+    return wb, class_code
+
+
+def build_workbook(
+    *,
+    rating: str,
+    material: str,
+    ca: str,
+    service: str,
+    design_p_barg: float,
+    design_t_c: float,
+    mdmt_c: float,
+    joint_type: str,
+) -> tuple[io.BytesIO, str]:
+    """Serialise the in-memory Workbook to xlsx bytes for download.
+
+    Thin wrapper over `build_workbook_obj()` — call that directly if
+    you need the Workbook object itself (e.g. for PDF conversion)."""
+    wb, class_code = build_workbook_obj(
+        rating=rating, material=material, ca=ca, service=service,
+        design_p_barg=design_p_barg, design_t_c=design_t_c,
+        mdmt_c=mdmt_c, joint_type=joint_type,
+    )
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
