@@ -2950,6 +2950,8 @@ function showReport(state) {
     if (dl) dl.style.display = '';
     const dx = document.getElementById('downloadExcelBtn');
     if (dx) dx.disabled = false;
+    const dp = document.getElementById('downloadPdfBtn');
+    if (dp) dp.disabled = false;
 
     // Pre-fill the editable design conditions ONLY if the user hasn't
     // typed anything yet — preserve their edits across re-resolves.
@@ -2998,6 +3000,8 @@ function hideReport() {
     if (dl) dl.style.display = 'none';
     const dx = document.getElementById('downloadExcelBtn');
     if (dx) dx.disabled = true;
+    const dp = document.getElementById('downloadPdfBtn');
+    if (dp) dp.disabled = true;
     window._reportShown = false;
 }
 
@@ -3012,11 +3016,15 @@ function wireForm() {
         });
     }
 
-    // Download Excel — pulls live design conditions from Tab 2 inputs so
-    // the export reflects whatever the user is currently looking at.
-    const xlsxBtn = document.getElementById('downloadExcelBtn');
-    if (xlsxBtn) {
-        xlsxBtn.addEventListener('click', async () => {
+    // Download Excel / PDF — both pull live design conditions from Tab 2
+    // inputs so the export reflects whatever the user is currently
+    // looking at. They share the same request shape — only the endpoint
+    // and default filename extension differ — so we route both through
+    // a common helper.
+    function _wireDatasheetDownload(btnId, endpoint, defaultExt) {
+        const btn = document.getElementById(btnId);
+        if (!btn) return;
+        btn.addEventListener('click', async () => {
             const cached = window._lastResolution;
             if (!cached) {
                 showToast('Resolve a class first.', 'error');
@@ -3025,22 +3033,22 @@ function wireForm() {
             const dp = parseFloat(document.getElementById('rDesignPressure')?.value);
             const dt = parseFloat(document.getElementById('rDesignTemperature')?.value);
             // MDMT input was removed from the form — always send the
-            // project default. The saved-PMS payload + Excel still carry
-            // the field; to override per-class, extend the form here.
+            // project default. The saved-PMS payload + export still
+            // carry the field; to override per-class, extend the form.
             const md = _DEFAULT_MDMT_C;
             const joint = document.getElementById('rJointType')?.value || 'Seamless';
 
-            const rating = document.getElementById('pipingClass').value.trim();
+            const rating   = document.getElementById('pipingClass').value.trim();
             const material = document.getElementById('material').value.trim();
-            const ca = document.getElementById('corrosionAllowance').value.trim();
-            const service = document.getElementById('service').value.trim();
+            const ca       = document.getElementById('corrosionAllowance').value.trim();
+            const service  = document.getElementById('service').value.trim();
 
-            xlsxBtn.disabled = true;
-            const origLabel = xlsxBtn.innerHTML;
-            xlsxBtn.innerHTML = 'Generating…';
+            btn.disabled = true;
+            const origLabel = btn.innerHTML;
+            btn.innerHTML = 'Generating…';
 
             try {
-                const res = await fetch('/api/export/excel', {
+                const res = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -3058,7 +3066,7 @@ function wireForm() {
                 // Extract filename from Content-Disposition if present.
                 const disp = res.headers.get('Content-Disposition') || '';
                 const m = disp.match(/filename="([^"]+)"/);
-                const filename = m ? m[1] : `PMS-${cached.class_code}.xlsx`;
+                const filename = m ? m[1] : `PMS-${cached.class_code}.${defaultExt}`;
 
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -3070,11 +3078,13 @@ function wireForm() {
             } catch (e) {
                 showToast(`Export failed: ${e.message || e}`, 'error', 6000);
             } finally {
-                xlsxBtn.disabled = false;
-                xlsxBtn.innerHTML = origLabel;
+                btn.disabled = false;
+                btn.innerHTML = origLabel;
             }
         });
     }
+    _wireDatasheetDownload('downloadExcelBtn', '/api/export/excel', 'xlsx');
+    _wireDatasheetDownload('downloadPdfBtn',   '/api/export/pdf',   'pdf');
 }
 
 // ---------------------------------------------------------------------------

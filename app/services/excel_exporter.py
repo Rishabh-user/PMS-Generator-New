@@ -21,6 +21,7 @@ from typing import Any, Optional
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.page import PageMargins
 
 from app.config import settings
 from app.services import (
@@ -1223,6 +1224,38 @@ def build_workbook(
     row = _ds_build_bolts_gaskets(ws, row, ctx, total_cols)
     row = _ds_build_valves(ws, row, ctx, total_cols)
     row = _ds_build_notes(ws, row, ctx, total_cols)
+
+    # ── Print / page setup ───────────────────────────────────────────
+    # The PMS datasheet is 23 columns wide — it never fits on a default
+    # portrait Letter page, so without this block the PDF (rendered by
+    # LibreOffice from this .xlsx) gets the right-hand columns chopped
+    # off. The settings below tell Excel/LibreOffice exactly how to
+    # paginate so the printed/PDF output mirrors the on-screen layout:
+    #
+    #   • A4 landscape — natural fit for our column count.
+    #   • fitToWidth=1, fitToHeight=0 — scale every page to one page
+    #     wide; let the height flow naturally across as many pages as
+    #     the content needs.
+    #   • Narrow margins — eliminates the big white borders the user
+    #     was seeing on every side.
+    #   • Horizontal centering — keeps the table centred on the page
+    #     when the scaled content is slightly narrower than full width.
+    #   • Explicit print_area covering everything we wrote — so blank
+    #     trailing rows / columns don't get pulled into the print job.
+    final_row = row - 1
+    last_col_letter = get_column_letter(total_cols)
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+    ws.page_setup.paperSize   = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth  = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins = PageMargins(
+        left=0.25, right=0.25,
+        top=0.3,   bottom=0.3,
+        header=0.15, footer=0.15,
+    )
+    ws.print_options.horizontalCentered = True
+    ws.print_area = f"A1:{last_col_letter}{final_row}"
 
     buf = io.BytesIO()
     wb.save(buf)
