@@ -458,12 +458,29 @@ def _ds_build_header(ws, row, ctx, total_cols):
 # ── 2. P-T Rating ───────────────────────────────────────────────────
 def _ds_build_pt(ws, row, ctx, total_cols):
     pt = ctx["pt"] or {}
-    temps   = pt.get("temperatures_c") or []
-    presses = pt.get("pressures_barg") or []
-    labels  = pt.get("temp_labels") or [str(t) for t in temps]
+    # Backend ships TWO P-T column sets in the snapshot:
+    #   • `temperatures_c` / `pressures_barg` — full published curve
+    #     (e.g. CS 150# goes out to 538 °C). Used by the WT calc,
+    #     adequacy check, and any interpolation. The Excel/PDF
+    #     should NOT print this list — it's longer than the on-screen
+    #     P-T Rating table and would let the printed sheet disagree
+    #     with what the engineer sees in the SPA.
+    #   • `display_columns.temperatures_c` / `.pressures_barg` —
+    #     backend-pre-filtered subset capped at 300 °C (the project's
+    #     PT_TABLE_DISPLAY_CAP_C in pt_lookup.py). This is the exact
+    #     set the SPA's P-T Rating table renders, so the printed PMS
+    #     must use the same set to stay consistent.
+    #
+    # Fallback to the full lists only when display_columns is missing
+    # (legacy snapshots from before the cap was introduced).
+    display = pt.get("display_columns") or {}
+    temps   = display.get("temperatures_c") or pt.get("temperatures_c") or []
+    presses = display.get("pressures_barg") or pt.get("pressures_barg") or []
+    labels  = display.get("temp_labels")    or pt.get("temp_labels") or [str(t) for t in temps]
     hydro   = pt.get("hydrotest_barg")
     if hydro is None:
-        hydro = (max(presses) * 1.5) if presses else ctx.get("design_p", 0) * 1.5
+        full_presses = pt.get("pressures_barg") or []
+        hydro = (max(full_presses) * 1.5) if full_presses else ctx.get("design_p", 0) * 1.5
 
     title = ("Pressure-Temperature Rating (EEMUA 234, Table 69)"
              if _ds_is_titanium(ctx["material"])
