@@ -106,6 +106,23 @@ def derive_letter(rating: str) -> str:
     )
 
 
+def _valid_cas_for_material(base: str) -> list[str]:
+    """Return the corrosion-allowance values catalogued for this
+    cleaned material token, in display order. Used to enrich the
+    'no digit defined' error so the user sees concrete next steps
+    instead of an internal-doc reference."""
+    rules = _naming_rules().get("material_digits", []) or []
+    found: list[str] = []
+    for rule in rules:
+        rule_base, _, _ = _material_token(rule.get("material") or "")
+        if rule_base == base:
+            ca = (rule.get("ca") or "").strip()
+            display = "NIL" if _norm(ca) == "NIL" else f"{ca} mm"
+            if display not in found:
+                found.append(display)
+    return found
+
+
 def derive_digit(material: str, ca: str) -> str:
     """(material, CA) → §5.5 digit. Both the rule's `material` field and
     the user input go through `_material_token` so they're compared on the
@@ -116,9 +133,29 @@ def derive_digit(material: str, ca: str) -> str:
         rule_base, _, _ = _material_token(rule["material"])
         if rule_base == base and _norm(rule["ca"]) == ca_tok:
             return rule["digit"]
+
+    # The (material, CA) pair has no catalogued class. Surface a
+    # user-friendly error: name the material, name what corrosion
+    # allowance(s) it CAN take, and skip the internal-doc reference
+    # (§5.5 / class_naming.json) that only an operator can act on.
+    ca_display = "NIL" if ca_tok == "NIL" else f"{ca_tok} mm"
+    valid_cas = _valid_cas_for_material(base)
+    if valid_cas:
+        if len(valid_cas) == 1:
+            options = valid_cas[0]
+        elif len(valid_cas) == 2:
+            options = f"{valid_cas[0]} or {valid_cas[1]}"
+        else:
+            options = ", ".join(valid_cas[:-1]) + f", or {valid_cas[-1]}"
+        raise ResolutionError(
+            f"{material} doesn't use a {ca_display} corrosion allowance. "
+            f"Pick {options} to match the catalogued PMS classes for "
+            f"this material."
+        )
     raise ResolutionError(
-        f"No §5.5 digit defined for material={base!r}, CA={ca_tok!r}. "
-        f"Add a rule to class_naming.json → material_digits."
+        f"{material} isn't a catalogued PMS material yet. Pick a "
+        f"different material from the dropdown — or ask the project "
+        f"engineer to add it to the catalogue."
     )
 
 
@@ -176,6 +213,46 @@ def _service_digit_override(material: str, service: Optional[str]) -> Optional[s
     return None  # default to the catalog rule → 50
 
 
+def _check_rating_restrictions(letter: str, digit: str,
+                               rating: str, material: str) -> None:
+    """Enforce project rule: certain material-digits are catalogued
+    ONLY at low-pressure ratings (150# / EEMUA 20 bar — both letter A).
+
+    The list of restricted digits lives in `class_naming.json` →
+    `rating_restrictions.low_pressure_only_digits`. By default it
+    covers:
+      • 30 / 40   — CuNi / Copper (physical pressure limit)
+      • 50 / 51 / 52 — GRE variants (composite, low-pressure only)
+      • 60        — CPVC (plastic, low-pressure only)
+      • 70        — Titanium (project policy — Ti only at 150#)
+
+    Raises ResolutionError when the digit is restricted AND the rating
+    letter doesn't match the configured allowed letter (default "A").
+    Callers that enumerate combos (chat agent's `_safe_resolve`) catch
+    this and skip the combo silently; routes like /api/resolve-class
+    and /api/compute-pms surface it as a 422 with the message below.
+    """
+    rules = _naming_rules().get("rating_restrictions") or {}
+    restricted = set(rules.get("low_pressure_only_digits") or [])
+    if digit not in restricted:
+        return
+    allowed_letter = rules.get("low_pressure_only_letter", "A")
+    if letter == allowed_letter:
+        return
+    # Build a friendly error message that names the actual rating(s)
+    # the user should pick instead, derived from the rating_letters
+    # map (so this stays in sync if more low-pressure aliases are
+    # added later).
+    rating_letters = _naming_rules().get("rating_letters") or {}
+    allowed_ratings = [r for r, lt in rating_letters.items() if lt == allowed_letter]
+    raise ResolutionError(
+        f"Material {material!r} is only catalogued at low-pressure "
+        f"ratings ({', '.join(allowed_ratings) or allowed_letter}). "
+        f"The requested rating {rating!r} doesn't apply to this "
+        f"material — pick a different rating or a different material."
+    )
+
+
 def derive_class_code(rating: str, material: str, ca: str,
                       service: Optional[str] = None) -> dict:
     letter   = derive_letter(rating)
@@ -185,6 +262,13 @@ def derive_class_code(rating: str, material: str, ca: str,
     digit = override or base_digit
     suffix   = derive_suffix(material, ca)
     trailing = _tubing_variant(rating)
+
+    # Project rule: reject (rating, material) combos that don't exist in
+    # real catalogues — e.g. Copper @ 300#, Titanium @ 600#. Keeps the
+    # SPA from generating a nonsense PMS and keeps chat-agent matches
+    # to physically realistic classes only.
+    _check_rating_restrictions(letter, digit, rating, material)
+
     return {
         "class_code": f"{letter}{digit}{trailing}{suffix}",
         "letter":     letter,
