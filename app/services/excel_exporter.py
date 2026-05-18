@@ -557,8 +557,16 @@ def _ds_build_pipe_data(ws, row, ctx, total_cols):
         row = _ds_label_value_row(ws, row, "Fittings", "ASTM F 439", total_cols)
         return row
     elif is_cuni or is_copper:
-        # No Sch/WT rows — these materials don't use B36.10M schedules.
-        pass
+        # CuNi (EEMUA 234) and Copper (ASME B16.22) follow manufacturer
+        # standards rather than ASME B36.10M schedule numbers. The
+        # backend WT calc still produces a sel_thk_mm for each NPS
+        # (using its standard picker), so we surface that thickness
+        # but display "MFR-STD" in place of the schedule cell to make
+        # it clear there's no B36.10M sch # to spec. Previously these
+        # two rows were suppressed entirely, leaving the engineer with
+        # no wall-thickness reference at all on the printed sheet.
+        _data_row("Sch.",   ["MFR-STD" for _ in wt_rows])
+        _data_row("WT. mm", [_ds_fmt(r.get("sel_thk_mm"), 2) for r in wt_rows])
     else:
         def _sch(r): return "—" if r.get("status") == "NOT OK" else (r.get("sch") or "—")
         def _wt(r):

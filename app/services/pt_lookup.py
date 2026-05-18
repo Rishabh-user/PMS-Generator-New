@@ -70,6 +70,29 @@ def _clean_material(material: str) -> str:
     return raw
 
 
+# Materials whose P-T rating is governed by a standard OTHER than the
+# user's selected flange rating. CuNi pipes (per EEMUA 234) are always
+# rated at 20 bar regardless of whether they're installed in a "150#"
+# system context — so when a caller asks for ("150#", "CuNi") we
+# transparently redirect to ("EEMUA 20 bar", "CuNi") and surface the
+# real engineering curve. Add new entries here when more materials
+# follow a separate spec (e.g. dedicated tubing ratings).
+_MATERIAL_RATING_REDIRECTS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"(?i)\b(?:CuNi|90/10\s*CuNi|C70600)\b"), "EEMUA 20 bar"),
+]
+
+
+def _redirect_rating(rating: str, material: str) -> str:
+    """Return the effective rating for the P-T lookup. For most
+    materials this is the user-supplied rating. For materials whose
+    P-T curve lives under a different rating bucket (see
+    `_MATERIAL_RATING_REDIRECTS`), the bucket name takes over."""
+    for pattern, target in _MATERIAL_RATING_REDIRECTS:
+        if pattern.search(material or ""):
+            return target
+    return rating
+
+
 def find(rating: str, material: str) -> Optional[dict]:
     """Locate the (rating, group) entry whose `materials` array contains
     `material`. Returns None when no match — caller decides what to do
@@ -77,7 +100,12 @@ def find(rating: str, material: str) -> Optional[dict]:
     if not rating or not material:
         return None
 
-    rating_key = _rating_key(rating)
+    # Some materials have their P-T governed by a separate-standard
+    # rating (e.g. CuNi → EEMUA 20 bar). Apply that redirect BEFORE
+    # the rating-key lookup so the caller doesn't have to know which
+    # standard a given material belongs to.
+    effective_rating = _redirect_rating(rating, material)
+    rating_key = _rating_key(effective_rating)
     # Case-insensitive rating-key match so 'EEMUA 20 bar' / 'EEMUA 20 BAR' /
     # 'eemua 20 bar' all hit the same JSON entry.
     rating_block = None
