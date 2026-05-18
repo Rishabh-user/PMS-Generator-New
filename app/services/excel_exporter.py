@@ -276,7 +276,24 @@ def _ds_build_header(ws, row, ctx, total_cols):
     #   └────────┴──────────────────────────────┴────────────┴───────┴────────────┴─────────────┘
     is_tubing_cls = _ds_is_tubing(ctx["class_code"], ctx["material"])
     displayed_code = _ds_displayed_code(ctx["class_code"], ctx["material"], ctx.get("service"))
-    mill = "0.0%" if is_tubing_cls else "12.5%"
+    # Mill tolerance:
+    #   • Tubing (instrument tubing per ASTM A269) → 0.0%
+    #   • GRE composite pipe → "NA" (mill tolerance doesn't apply —
+    #     wall thickness is dictated by manufacturer winding spec,
+    #     not by B36.10M rolling tolerance).
+    #   • CuNi / Copper / CPVC also follow manufacturer standards
+    #     rather than B36.10M, so they get "NA" too.
+    #   • Everything else (steel grades) → 12.5% per ASME B36.10M.
+    is_mfr_std_pipe = (
+        _ds_is_gre(ctx["material"]) or _ds_is_cpvc(ctx["material"])
+        or _ds_is_cuni(ctx["material"]) or _ds_is_copper(ctx["material"])
+    )
+    if is_tubing_cls:
+        mill = "0.0%"
+    elif is_mfr_std_pipe:
+        mill = "NA"
+    else:
+        mill = "12.5%"
     rating_disp = "—" if is_tubing_cls else ctx["rating"]
     sheet_no = displayed_code
 
@@ -319,7 +336,11 @@ def _ds_build_header(ws, row, ctx, total_cols):
     if is_tubing_cls:
         design_code = "—"
     elif _ds_is_gre(ctx["material"]):
-        design_code = "ASME B 31.3 / ISO 14692 / UKOOA"
+        # Note: "ASME B31.3" (no space between B and 31.3) — matches
+        # the project's reference PMS image for A50 / A51 / A52 exactly.
+        # Spacing kept tight for the GRE branch even though other
+        # branches use "ASME B 31.3" with a space.
+        design_code = "ASME B31.3 / ISO 14692 / UKOOA"
     elif has_nace:
         design_code = "ASME B 31.3, NACE-MR-01-75 / ISO-15156-1/2/3"
     else:
@@ -452,11 +473,13 @@ def _ds_build_pt(ws, row, ctx, total_cols):
     n = len(presses)
     hydro_span = max(2, total_cols - 1 - n)
 
-    # Pressure row
+    # Pressure row — 2 dp so BONSTRAND values (16.32 etc.) keep their
+    # precision. `_ds_fmt` strips trailing zeros, so cleaner B16.5
+    # ratings (20.0 → "20", 19.6 → "19.6") still display tidily.
     _ds_write(ws, row, 1, "Press., barg",
               font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
     for i, p in enumerate(presses):
-        _ds_write(ws, row, 2 + i, _ds_fmt(p, 1), font=DS_FONT_VAL, align=DS_CENTER)
+        _ds_write(ws, row, 2 + i, _ds_fmt(p, 2), font=DS_FONT_VAL, align=DS_CENTER)
     for i in range(n, total_cols - 1 - hydro_span):
         _ds_write(ws, row, 2 + i, "", font=DS_FONT_VAL, align=DS_CENTER)
     _ds_write(ws, row, total_cols - hydro_span + 1, "Hydrotest Pr. (barg)",
@@ -470,7 +493,9 @@ def _ds_build_pt(ws, row, ctx, total_cols):
         _ds_write(ws, row, 2 + i, str(lbl), font=DS_FONT_VAL, align=DS_CENTER)
     for i in range(n, total_cols - 1 - hydro_span):
         _ds_write(ws, row, 2 + i, "", font=DS_FONT_VAL, align=DS_CENTER)
-    _ds_write(ws, row, total_cols - hydro_span + 1, _ds_fmt(hydro, 1),
+    # Hydrotest at 2 dp for the same reason as Press., barg above —
+    # BONSTRAND hydrotest = 24.48 barg needs the extra precision.
+    _ds_write(ws, row, total_cols - hydro_span + 1, _ds_fmt(hydro, 2),
               span=hydro_span, font=DS_FONT_VAL_B, align=DS_CENTER)
     row += 1
 

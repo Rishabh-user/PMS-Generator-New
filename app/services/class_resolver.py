@@ -291,7 +291,9 @@ def resolve(rating: str, material: str, ca: str, service: Optional[str] = None) 
     (unknown rating, or unknown material/CA pair — extend
     `class_naming.json` to fix)."""
     parts = derive_class_code(rating, material, ca, service)
-    pt    = pt_lookup.find(rating, material)
+    # `service` is passed through so pt_lookup can swap in service-bound
+    # alternates (e.g. GRE + Hypochlorite → BONSTRAND 50000C curve).
+    pt    = pt_lookup.find(rating, material, service=service)
     code_factors = _build_code_factors(material, pt, rating, parts["class_code"], service)
 
     return {

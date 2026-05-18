@@ -93,10 +93,59 @@ def _redirect_rating(rating: str, material: str) -> str:
     return rating
 
 
-def find(rating: str, material: str) -> Optional[dict]:
+# Service-specific P-T alternates. Some materials have a primary P-T
+# curve plus one or more service-bound alternates (e.g. GRE pipe has a
+# Hypochlorite/BONSTRAND alternate with a lower pressure and lower max
+# temp). The JSON shape is:
+#
+#   "GRE": {
+#       "materials":      [...],
+#       "temperatures_c": [...],          # ← primary
+#       "pressures_barg": [...],
+#       "_alternates": {
+#           "Hypochlorite": {              # ← service trigger (regex)
+#               "temperatures_c": [...],
+#               "pressures_barg": [...],
+#               ...
+#           }
+#       }
+#   }
+#
+# Each alternate key is matched against the user's service string via
+# this regex map; on a match, the alternate's fields override the
+# primary block's. Order matters — first match wins.
+_SERVICE_ALTERNATE_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"(?i)Hypochlorite|BONSTRAND"), "Hypochlorite"),
+]
+
+
+def _resolve_service_alternate(group: dict, service: Optional[str]) -> dict:
+    """If `service` triggers one of the alternate keys defined in
+    `group._alternates`, merge that alternate over the group's primary
+    fields and return the merged dict. Otherwise return the group
+    untouched. Pure function — never mutates the input."""
+    if not service:
+        return group
+    alternates = group.get("_alternates") or {}
+    if not alternates:
+        return group
+    for pattern, alt_key in _SERVICE_ALTERNATE_PATTERNS:
+        if alt_key in alternates and pattern.search(service):
+            merged = dict(group)
+            merged.update(alternates[alt_key])
+            return merged
+    return group
+
+
+def find(rating: str, material: str, service: Optional[str] = None) -> Optional[dict]:
     """Locate the (rating, group) entry whose `materials` array contains
     `material`. Returns None when no match — caller decides what to do
-    (show "no data", call AI fallback, etc.)."""
+    (show "no data", call AI fallback, etc.).
+
+    `service` is optional. When supplied, it lets the lookup swap in a
+    service-specific alternate (e.g. GRE + Hypochlorite uses the
+    BONSTRAND 50000C P-T curve, which is lower-pressure and
+    lower-max-temp than standard GRE)."""
     if not rating or not material:
         return None
 
@@ -129,6 +178,11 @@ def find(rating: str, material: str) -> Optional[dict]:
         # of 'SS 316 / 316L (Tubing)' (paren stripped on both sides).
         materials_norm = {_clean_material(m) for m in group.get("materials", [])}
         if target in materials_norm:
+            # Service-aware override: GRE + Hypochlorite, etc. The
+            # alternate's temperatures / pressures / hydrotest replace
+            # the primary's; everything else (materials list, _alternates
+            # key itself) is inherited.
+            group = _resolve_service_alternate(group, service)
             temps    = list(group.get("temperatures_c", []))
             pressures = list(group.get("pressures_barg", []))
             labels   = list(group.get("temp_labels", []))
