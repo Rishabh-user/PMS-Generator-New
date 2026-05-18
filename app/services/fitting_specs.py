@@ -153,9 +153,14 @@ _RULES: list[tuple[re.Pattern, dict]] = [
         "branch_outlet":"Saddle fitting per mfr.",
     }),
     # --- Galvanised / lined CS variants share A106 Gr B base ---
+    # Pipe MOC carries both seamless and welded specs separated by "/" —
+    # ASTM A 106 Gr. B for small-bore seamless, API 5L Gr. B for
+    # large-bore welded line pipe. Same convention as the CS NACE row
+    # above. The trailing parenthetical (galvanised / epoxy-lined)
+    # applies to both halves.
     (re.compile(r"(?i)\bCS\s*GALV\b|GALV"), {
         "family":       "Galvanised CS",
-        "pipe":         "ASTM A 106 Gr. B (hot-dip galvanised, ASTM A 53)",
+        "pipe":         "ASTM A 106 Gr. B / API 5L Gr. B (hot-dip galvanised, ASTM A 53)",
         "fittings":     "ASTM A 234 Gr. WPB (galvanised)",
         "flange":       "ASTM A 105N (galvanised)",
         "valve_body":   "ASTM A 216 Gr. WCB (galvanised) — body, SS trim",
@@ -163,7 +168,7 @@ _RULES: list[tuple[re.Pattern, dict]] = [
     }),
     (re.compile(r"(?i)EPOXY\s*LINED|EPOXY"), {
         "family":       "Epoxy-Lined CS",
-        "pipe":         "ASTM A 106 Gr. B (epoxy lined)",
+        "pipe":         "ASTM A 106 Gr. B / API 5L Gr. B (epoxy lined)",
         "fittings":     "ASTM A 234 Gr. WPB (epoxy lined)",
         "flange":       "ASTM A 105N (epoxy lined RF)",
         "valve_body":   "ASTM A 216 Gr. WCB (epoxy lined)",
@@ -189,7 +194,10 @@ _RULES: list[tuple[re.Pattern, dict]] = [
     # --- Default — generic carbon steel ---
     (re.compile(r"(?i)\bCS\b|A106"), {
         "family":       "Carbon Steel",
-        "pipe":         "ASTM A 106 Gr. B",
+        # Same convention as CS NACE — A 106 Gr. B (small-bore seamless)
+        # and API 5L Gr. B (large-bore welded line pipe). Both are
+        # ASME B31.3 Table A-1 listed for CS service.
+        "pipe":         "ASTM A 106 Gr. B / API 5L Gr. B",
         "fittings":     "ASTM A 234 Gr. WPB",
         "flange":       "ASTM A 105N",
         "valve_body":   "ASTM A 216 Gr. WCB",
