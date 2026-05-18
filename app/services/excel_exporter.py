@@ -308,9 +308,22 @@ def _ds_build_header(ws, row, ctx, total_cols):
     # layout. Those values are still available to the engineer in the
     # PMS Generator UI (Tab 1, "Design Conditions") and in the JSON
     # snapshot — they just don't repeat in the Excel header anymore.
+    # Design Code is material-aware:
+    #   • Tubing classes have no flange-spec design code → "—"
+    #   • GRE pipe is qualified under ISO 14692 / UKOOA in addition to
+    #     ASME B 31.3 (matches the Bondstrand 2400 product data sheet
+    #     and the project's reference PMS for A50 / A52).
+    #   • NACE materials cite the sour-service standards alongside B 31.3.
+    #   • Everything else is plain ASME B 31.3.
     has_nace = "NACE" in (ctx["material"] or "").upper()
-    design_code = ("—" if is_tubing_cls else
-                   ("ASME B 31.3, NACE-MR-01-75 / ISO-15156-1/2/3" if has_nace else "ASME B 31.3"))
+    if is_tubing_cls:
+        design_code = "—"
+    elif _ds_is_gre(ctx["material"]):
+        design_code = "ASME B 31.3 / ISO 14692 / UKOOA"
+    elif has_nace:
+        design_code = "ASME B 31.3, NACE-MR-01-75 / ISO-15156-1/2/3"
+    else:
+        design_code = "ASME B 31.3"
     branch = ctx.get("branch_chart") or {}
     if is_tubing_cls:
         bc_label = "—"

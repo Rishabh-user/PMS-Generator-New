@@ -190,7 +190,7 @@
           "temperatures_c": [
             38.0,
             50.0,
-            100.0
+            93.0
           ],
           "pressures_barg": [
             20.0,
@@ -200,7 +200,7 @@
           "temp_labels": [
             "0 to 38",
             "50",
-            "100"
+            "93"
           ],
           "_alternates": {
             "Hypochlorite": {
@@ -475,7 +475,7 @@
           "temperatures_c": [
             38.0,
             50.0,
-            100.0
+            93.0
           ],
           "pressures_barg": [
             20.0,
@@ -485,7 +485,7 @@
           "temp_labels": [
             "0 to 38",
             "50",
-            "100"
+            "93"
           ],
           "_alternates": {
             "Hypochlorite": {
@@ -760,7 +760,7 @@
           "temperatures_c": [
             38.0,
             50.0,
-            100.0
+            93.0
           ],
           "pressures_barg": [
             20.0,
@@ -770,7 +770,7 @@
           "temp_labels": [
             "0 to 38",
             "50",
-            "100"
+            "93"
           ],
           "_alternates": {
             "Hypochlorite": {
@@ -1045,7 +1045,7 @@
           "temperatures_c": [
             38.0,
             50.0,
-            100.0
+            93.0
           ],
           "pressures_barg": [
             20.0,
@@ -1055,7 +1055,7 @@
           "temp_labels": [
             "0 to 38",
             "50",
-            "100"
+            "93"
           ],
           "_alternates": {
             "Hypochlorite": {
@@ -1330,7 +1330,7 @@
           "temperatures_c": [
             38.0,
             50.0,
-            100.0
+            93.0
           ],
           "pressures_barg": [
             20.0,
@@ -1340,7 +1340,7 @@
           "temp_labels": [
             "0 to 38",
             "50",
-            "100"
+            "93"
           ],
           "_alternates": {
             "Hypochlorite": {
@@ -1615,7 +1615,7 @@
           "temperatures_c": [
             38.0,
             50.0,
-            100.0
+            93.0
           ],
           "pressures_barg": [
             20.0,
@@ -1625,7 +1625,7 @@
           "temp_labels": [
             "0 to 38",
             "50",
-            "100"
+            "93"
           ],
           "_alternates": {
             "Hypochlorite": {
@@ -1837,7 +1837,7 @@
           "temperatures_c": [
             38.0,
             50.0,
-            100.0
+            93.0
           ],
           "pressures_barg": [
             20.0,
@@ -1847,7 +1847,7 @@
           "temp_labels": [
             "0 to 38",
             "50",
-            "100"
+            "93"
           ],
           "_alternates": {
             "Hypochlorite": {
@@ -2059,7 +2059,7 @@
           "temperatures_c": [
             38.0,
             50.0,
-            100.0
+            93.0
           ],
           "pressures_barg": [
             20.0,
@@ -2069,7 +2069,7 @@
           "temp_labels": [
             "0 to 38",
             "50",
-            "100"
+            "93"
           ],
           "_alternates": {
             "Hypochlorite": {
