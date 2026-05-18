@@ -66,18 +66,33 @@ _RULES: list[tuple[re.Pattern, dict]] = [
         "branch_outlet":"MSS SP 97, ASTM A 182 F316L",
     }),
     # --- Duplex / Super-Duplex ---
+    # Pipe and fittings are size-split per ASTM convention — small-bore
+    # (seamless) and large-bore (welded with X-ray inspection) require
+    # different production specs even though both reference the same
+    # UNS material. Slash-separated string keeps the rendering as a
+    # single MOC cell (matches the CS NACE style "ASTM A 106 Gr. B /
+    # API 5L Gr. B"). Reading order:  small-bore / large-bore.
+    #
+    # Pipe references:
+    #   • ASTM A 790  — Seamless ferritic/austenitic stainless pipe
+    #   • ASTM A 928  — Electric-fusion-welded stainless pipe with
+    #                   filler metal added (large-bore use)
+    # Fittings reference:
+    #   • ASTM A 815 — Wrought ferritic/duplex stainless fittings.
+    #     Grade WP-S  = solution-annealed (seamless)
+    #     Grade WP-WX = welded, solution-annealed, X-ray inspected
     (re.compile(r"(?i)\bSDSS\b|S32750"), {
         "family":       "Super Duplex (S32750)",
-        "pipe":         "ASTM A 790 UNS S32750",
-        "fittings":     "ASTM A 815 UNS S32750",
+        "pipe":         "ASTM A 790 UNS S32750 / ASTM A 928 UNS S32750",
+        "fittings":     "ASTM A 815 UNS S32750, Gr. WP-S / Gr. WP-WX",
         "flange":       "ASTM A 182 F53",
         "valve_body":   "ASTM A 995 6A",
         "branch_outlet":"MSS SP 97, ASTM A 182 F53",
     }),
     (re.compile(r"(?i)\bDSS\b|S31803|S32205"), {
         "family":       "Duplex (S31803)",
-        "pipe":         "ASTM A 790 UNS S31803",
-        "fittings":     "ASTM A 815 UNS S31803",
+        "pipe":         "ASTM A 790 UNS S31803 / ASTM A 928 UNS S31803",
+        "fittings":     "ASTM A 815 UNS S31803, Gr. WP-S / Gr. WP-WX",
         "flange":       "ASTM A 182 F51",
         "valve_body":   "ASTM A 995 4A",
         "branch_outlet":"MSS SP 97, ASTM A 182 F51",
