@@ -215,42 +215,58 @@ def _service_digit_override(material: str, service: Optional[str]) -> Optional[s
 
 def _check_rating_restrictions(letter: str, digit: str,
                                rating: str, material: str) -> None:
-    """Enforce project rule: certain material-digits are catalogued
-    ONLY at low-pressure ratings (150# / EEMUA 20 bar — both letter A).
+    """Enforce two complementary (rating, material) restrictions from
+    `class_naming.json` → `rating_restrictions`:
 
-    The list of restricted digits lives in `class_naming.json` →
-    `rating_restrictions.low_pressure_only_digits`. By default it
-    covers:
-      • 30 / 40   — CuNi / Copper (physical pressure limit)
-      • 50 / 51 / 52 — GRE variants (composite, low-pressure only)
-      • 60        — CPVC (plastic, low-pressure only)
-      • 70        — Titanium (project policy — Ti only at 150#)
+    1. `low_pressure_only_digits` — material-digits catalogued ONLY at
+       low-pressure ratings (150# / EEMUA 20 bar):
+         • 30 / 40   — CuNi / Copper (physical pressure limit)
+         • 50 / 51 / 52 — GRE variants (composite, low-pressure only)
+         • 60        — CPVC (plastic, low-pressure only)
+         • 70        — Titanium (project policy — Ti only at 150#)
 
-    Raises ResolutionError when the digit is restricted AND the rating
-    letter doesn't match the configured allowed letter (default "A").
-    Callers that enumerate combos (chat agent's `_safe_resolve`) catch
-    this and skip the combo silently; routes like /api/resolve-class
-    and /api/compute-pms surface it as a 422 with the message below.
+    2. `tubing_only_digits` — when the rating is an instrument-tubing
+       series (letter `T` = Tubing A/B/C), only these material digits
+       are valid (carbon steel / SS plate grades / duplex etc. don't
+       exist as instrument-tubing products):
+         • 80 — SS 316 / 316L (Tubing)
+         • 90 — 6 MO Tubing
+
+    Raises ResolutionError when either rule is violated. Callers that
+    enumerate combos (chat agent's `_safe_resolve`) catch this and
+    skip silently; /api/resolve-class and /api/compute-pms surface it
+    as a 422.
     """
     rules = _naming_rules().get("rating_restrictions") or {}
-    restricted = set(rules.get("low_pressure_only_digits") or [])
-    if digit not in restricted:
-        return
-    allowed_letter = rules.get("low_pressure_only_letter", "A")
-    if letter == allowed_letter:
-        return
-    # Build a friendly error message that names the actual rating(s)
-    # the user should pick instead, derived from the rating_letters
-    # map (so this stays in sync if more low-pressure aliases are
-    # added later).
     rating_letters = _naming_rules().get("rating_letters") or {}
-    allowed_ratings = [r for r, lt in rating_letters.items() if lt == allowed_letter]
-    raise ResolutionError(
-        f"Material {material!r} is only catalogued at low-pressure "
-        f"ratings ({', '.join(allowed_ratings) or allowed_letter}). "
-        f"The requested rating {rating!r} doesn't apply to this "
-        f"material — pick a different rating or a different material."
-    )
+
+    # ── Rule 1: material restricted to low-pressure rating(s) ──
+    restricted = set(rules.get("low_pressure_only_digits") or [])
+    if digit in restricted:
+        allowed_letter = rules.get("low_pressure_only_letter", "A")
+        if letter != allowed_letter:
+            allowed_ratings = [r for r, lt in rating_letters.items() if lt == allowed_letter]
+            raise ResolutionError(
+                f"Material {material!r} is only catalogued at low-pressure "
+                f"ratings ({', '.join(allowed_ratings) or allowed_letter}). "
+                f"The requested rating {rating!r} doesn't apply to this "
+                f"material — pick a different rating or a different material."
+            )
+
+    # ── Rule 2: tubing rating restricted to tubing-material digits ──
+    tubing_letter = rules.get("tubing_letter")
+    tubing_only_digits = set(rules.get("tubing_only_digits") or [])
+    if tubing_letter and tubing_only_digits and letter == tubing_letter:
+        if digit not in tubing_only_digits:
+            tubing_ratings = [r for r, lt in rating_letters.items() if lt == tubing_letter]
+            raise ResolutionError(
+                f"Rating {rating!r} is an instrument-tubing series — "
+                f"only tubing materials are valid here (SS 316 / 316L (Tubing), "
+                f"6 MO Tubing). The material {material!r} doesn't exist as a "
+                f"tubing product. Pick a tubing material — or pick a flange "
+                f"rating ({', '.join(r for r in rating_letters if r not in tubing_ratings)[:60]}…) "
+                f"if you actually want {material} piping."
+            )
 
 
 def derive_class_code(rating: str, material: str, ca: str,

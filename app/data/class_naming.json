@@ -9,7 +9,6 @@
     "5000#": "J",
     "10000#": "K",
     "EEMUA 20 bar": "A",
-    "Tubing": "T",
     "Tubing A": "T",
     "Tubing B": "T",
     "Tubing C": "T"
@@ -129,7 +128,7 @@
     ]
   },
 
-  "_note_rating_restrictions": "These material-digits are physically rated for low-pressure service ONLY. Real-world PMS catalogues don't list CuNi/Copper/GRE/CPVC/Titanium piping at flange ratings above 150# — the materials can't sustain the pressure. class_resolver enforces this by rejecting any (material, CA) → digit combo here when paired with a rating letter not in `low_pressure_only_letter`. The chat agent's _safe_resolve catches the resulting ResolutionError and silently skips invalid combos; /api/resolve-class and /api/compute-pms surface it as a 422 with a clear explanation.",
+  "_note_rating_restrictions": "Two complementary rules: (1) `low_pressure_only_digits` — material-digits physically rated for low-pressure service ONLY (CuNi/Copper/GRE/CPVC/Titanium can't sustain pressures above 150# / EEMUA 20 bar). (2) `tubing_only_digits` — when the rating is an instrument-tubing series (letter `T` = Tubing A/B/C), only these material digits are valid; carbon steel / SS plate grades / duplex etc. don't exist as tubing products. class_resolver enforces BOTH rules at /api/resolve-class and /api/compute-pms; options_routes._compute_rating_restrictions exposes them via /api/options/all so the SPA can grey out invalid (rating, material) pairs in the dropdowns up front.",
   "rating_restrictions": {
     "low_pressure_only_digits": [
       "30",
@@ -140,6 +139,11 @@
       "60",
       "70"
     ],
-    "low_pressure_only_letter": "A"
+    "low_pressure_only_letter": "A",
+    "tubing_letter": "T",
+    "tubing_only_digits": [
+      "80",
+      "90"
+    ]
   }
 }

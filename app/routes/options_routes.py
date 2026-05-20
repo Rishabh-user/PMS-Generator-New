@@ -55,6 +55,8 @@ def _resolve_nps_file(material: Optional[str], service: Optional[str] = None) ->
 
 @lru_cache(maxsize=8)
 def _load(filename: str) -> dict:
+    # Cached per-process. Restart uvicorn (or touch a .py file the
+    # server imports) when the underlying JSON files change in dev.
     path = settings.data_dir / filename
     if not path.exists():
         raise HTTPException(status_code=500, detail=f"Missing data file: {filename}")
@@ -87,75 +89,96 @@ def _compute_rating_restrictions(ratings_doc: dict, materials_doc: dict) -> dict
     so the SPA can drive its dropdowns without re-implementing the §5.5
     digit logic.
 
-    Input form (in class_naming.json):
-        rating_restrictions: {
-            low_pressure_only_digits: ["30", "40", "50", "51", "52", "60", "70"],
-            low_pressure_only_letter: "A",
-        }
+    Input form (in class_naming.json → rating_restrictions):
+        low_pressure_only_digits  — material digits restricted to low-P
+        low_pressure_only_letter  — the letter those ratings share
+        tubing_letter             — letter for Tubing A/B/C series
+        tubing_only_digits        — material digits valid for tubing ratings
 
     Output form (what /api/options/all returns):
         rating_restrictions: {
+            # Material → rating direction (exotic materials → 150#/EEMUA only)
             restricted_materials: ["Copper", "CuNi (Valve: NAB)", …],
-            allowed_ratings:     ["150#", "EEMUA 20 bar"],
-            message:             "This material is only catalogued at …",
+            allowed_ratings:      ["150#", "EEMUA 20 bar"],
+            message:              "This material is only catalogued at …",
+
+            # Rating → material direction (Tubing series → tubing materials only)
+            tubing_only_ratings:   ["Tubing A", "Tubing B", "Tubing C"],
+            tubing_only_materials: ["SS 316 / 316L (Tubing)", "6 MO Tubing"],
+            tubing_only_message:   "Tubing ratings only support …",
         }
 
-    The SPA uses `restricted_materials` to flag exotic materials in its
-    dropdown, and `allowed_ratings` to limit the rating selector when
-    one of those materials is selected. Backend stays the single source
-    of truth — change the JSON, restart, and the SPA picks it up on
-    the next /api/options/all fetch.
+    The SPA uses these to disable invalid (rating, material) pairs in
+    BOTH dropdowns up front. Backend stays the single source of truth —
+    change the JSON, restart, and the SPA picks it up on the next fetch.
     """
     naming = _load("class_naming.json")
     rr = naming.get("rating_restrictions") or {}
-    restricted_digits = set(rr.get("low_pressure_only_digits") or [])
-    allowed_letter = rr.get("low_pressure_only_letter", "A")
-    if not restricted_digits:
-        return {"restricted_materials": [], "allowed_ratings": [], "message": ""}
+    rating_letters = naming.get("rating_letters") or {}
+    all_ratings = ratings_doc.get("ratings") or []
+    ui_labels = materials_doc.get("materials") or []
 
-    # The digit rules in class_naming.material_digits key on the cleaned
-    # material token (no parens, no NACE/LTCS markers). The UI dropdown
-    # shows the label form ("Copper", "CuNi (Valve: NAB)", …). Match
-    # one to the other by stripping the parenthetical from the UI
-    # label and checking against the rule's material.
     def _strip_parens(s: str) -> str:
         return re.sub(r"\s*\(.*?\)\s*", "", s or "").strip()
 
-    # Build {cleaned_label → original_label} so we can map back to the
-    # exact dropdown string the SPA already renders.
-    ui_labels = materials_doc.get("materials") or []
+    # Build {cleaned_label → original_label} so we can map a digit
+    # rule's `material` field back to the exact dropdown string.
+    # (class_naming.material_digits keys on the cleaned, paren-free
+    # form; the UI dropdown shows the label form.)
     cleaned_to_label: dict[str, str] = {}
     for lbl in ui_labels:
         cleaned_to_label.setdefault(_strip_parens(lbl).upper(), lbl)
 
-    # Walk the digit rules; for every rule whose digit is restricted,
-    # find the matching UI label and add it to the output list.
-    restricted_labels: list[str] = []
-    seen: set[str] = set()
-    for rule in naming.get("material_digits") or []:
-        if rule.get("digit") not in restricted_digits:
-            continue
-        rule_mat = _strip_parens(rule.get("material") or "").upper()
-        ui_label = cleaned_to_label.get(rule_mat)
-        if ui_label and ui_label not in seen:
-            restricted_labels.append(ui_label)
-            seen.add(ui_label)
+    def _ui_labels_for_digits(digit_set: set[str]) -> list[str]:
+        """Walk `material_digits` and return the UI labels whose digit
+        is in `digit_set`. Stable order preserved from the JSON file."""
+        out: list[str] = []
+        seen: set[str] = set()
+        for rule in naming.get("material_digits") or []:
+            if rule.get("digit") not in digit_set:
+                continue
+            rule_mat = _strip_parens(rule.get("material") or "").upper()
+            ui_label = cleaned_to_label.get(rule_mat)
+            if ui_label and ui_label not in seen:
+                out.append(ui_label)
+                seen.add(ui_label)
+        return out
 
-    # Ratings that map to the allowed letter (typically 150# and EEMUA 20 bar).
-    rating_letters = naming.get("rating_letters") or {}
-    all_ratings = ratings_doc.get("ratings") or []
-    allowed_ratings = [
-        r for r in all_ratings if rating_letters.get(r) == allowed_letter
-    ]
+    # ── Rule 1: exotic materials → low-pressure ratings only ──
+    restricted_digits = set(rr.get("low_pressure_only_digits") or [])
+    allowed_letter = rr.get("low_pressure_only_letter", "A")
+    restricted_labels = _ui_labels_for_digits(restricted_digits) if restricted_digits else []
+    allowed_ratings = [r for r in all_ratings if rating_letters.get(r) == allowed_letter]
+    msg1 = (
+        "This material is only catalogued at "
+        f"{', '.join(allowed_ratings) or allowed_letter}. "
+        "Pick a different rating or material."
+    ) if restricted_labels else ""
+
+    # ── Rule 2: tubing ratings → instrument-tubing materials only ──
+    tubing_letter = rr.get("tubing_letter")
+    tubing_only_digits = set(rr.get("tubing_only_digits") or [])
+    tubing_only_ratings = (
+        [r for r in all_ratings if rating_letters.get(r) == tubing_letter]
+        if tubing_letter else []
+    )
+    tubing_only_materials = (
+        _ui_labels_for_digits(tubing_only_digits) if tubing_only_digits else []
+    )
+    msg2 = (
+        f"{', '.join(tubing_only_ratings)} are instrument-tubing series — "
+        f"only tubing materials apply ({', '.join(tubing_only_materials)})."
+    ) if (tubing_only_ratings and tubing_only_materials) else ""
 
     return {
+        # Material → rating
         "restricted_materials": restricted_labels,
-        "allowed_ratings": allowed_ratings,
-        "message": (
-            "This material is only catalogued at "
-            f"{', '.join(allowed_ratings) or allowed_letter}. "
-            "Pick a different rating or material."
-        ),
+        "allowed_ratings":      allowed_ratings,
+        "message":              msg1,
+        # Rating → material
+        "tubing_only_ratings":   tubing_only_ratings,
+        "tubing_only_materials": tubing_only_materials,
+        "tubing_only_message":   msg2,
     }
 
 

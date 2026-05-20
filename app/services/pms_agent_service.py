@@ -80,7 +80,6 @@ _NON_B165_RATING_STANDARDS: dict[str, str] = {
     "5000#":         "API Specification 6A (wellhead / Christmas-tree equipment)",
     "10000#":        "API Specification 6A (wellhead / Christmas-tree equipment)",
     "EEMUA 20 bar":  "EEMUA 144 (90/10 CuNi tubing)",
-    "Tubing":        "ASTM A269 (instrument tubing)",
     "Tubing A":      "ASTM A269 (instrument tubing)",
     "Tubing B":      "ASTM A269 (instrument tubing)",
     "Tubing C":      "ASTM A269 (instrument tubing)",
@@ -192,7 +191,7 @@ Output STRICT JSON with this schema (no markdown, no preamble, no prose):
 
 # CATALOG
 Ratings: 150#, 300#, 600#, 900#, 1500#, 2500#, 5000#, 10000#, EEMUA 20 bar,
-         Tubing, Tubing A, Tubing B, Tubing C
+         Tubing A, Tubing B, Tubing C
 
 Materials: CS, CS NACE, LTCS, LTCS NACE, CS GALV, CS GALV (Valve: SS),
            CS - Epoxy Lined, SS316L, SS316L NACE, DSS, DSS NACE, SDSS,
@@ -230,6 +229,7 @@ Services (sample — pass through free text if not exact):
      "no CA" / "nil"                    → ["NIL"]
      "hydraulic oil"                    → ["Hydraulic Oil"]
      "corrosive hydrocarbon"            → ["Corrosive Hydro Carbon service"]
+     "tubing" (no A/B/C tier)           → ["Tubing A"]   // standard service tier default
 3. MULTI-VALUE within a field is OR:
      "DSS or SDSS"                      → materials: ["DSS", "SDSS"]
      "Glycol, FG, Hydro Carbon service" → services: ["Glycol", "FG", "Hydro Carbon service"]
