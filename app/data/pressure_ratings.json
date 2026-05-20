@@ -10,7 +10,6 @@
     "5000#",
     "10000#",
     "EEMUA 20 bar",
-    "Tubing",
     "Tubing A",
     "Tubing B",
     "Tubing C"
@@ -34,7 +33,7 @@
     },
     {
       "name": "Instrument Tubing (ASTM A269)",
-      "items": ["Tubing", "Tubing A", "Tubing B", "Tubing C"]
+      "items": ["Tubing A", "Tubing B", "Tubing C"]
     }
   ]
 }
