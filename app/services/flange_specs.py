@@ -93,6 +93,50 @@ def _is_bonstrand_service(service: Optional[str]) -> bool:
     return bool(re.search(r"Hypochlorite|BONSTRAND", service, re.I))
 
 
+# Service keywords that imply sour / H₂S / NACE-compliant operation.
+# When the service matches, bolting promotes to the hardness-controlled
+# `B7M / 2HM` (or `L7M / 7M` for LTCS) variant per NACE MR0175 /
+# ISO 15156 — even when the material name itself doesn't contain "NACE".
+# Engineering rule: a plain "CS" material in a sour service still needs
+# B7M / 2HM bolting; otherwise the studs are vulnerable to sulfide
+# stress cracking (SSC) and hydrogen embrittlement.
+_SOUR_SERVICE_PATTERN = re.compile(
+    r"""(?ix)            # case-insensitive, verbose
+    \b(?:
+        # ── Explicit sour / NACE cites ──
+        sour                          # 'sour', 'sour service', 'sour gas'
+      | H2S | H₂S                     # 'H2S' or the subscript-2 variant
+      | NACE                          # explicit standard cite
+      | MR\s*0175                     # NACE MR-0175
+      | ISO\s*15156                   # ISO 15156
+      | wet\s+H2S
+
+        # ── Catalogued project services with implicit sour content ──
+      | corrosive\s+hydro\s*carbon    # carries H2S in the service name
+      | hydro\s*carbon\s+water\s+injection
+                                      # this service explicitly mentions
+                                      # 'low CO2 and H2S' in its name
+
+        # ── Offshore O&G services that are sour by industry default ──
+        # (added per engineering review — Option B, May 2026):
+      | flare                         # collects any process stream incl. sour relief
+      | gas\s*lift                    # upstream gas lift almost always carries H2S
+      | produced\s+water              # always sour by composition
+    )\b
+    """
+)
+
+
+def _is_sour_service(service: Optional[str]) -> bool:
+    """Return True if the service description implies sour / H₂S /
+    NACE-compliant operation per the keywords above. Used by
+    `bolting()` to decide between B7/B7M (and L7/L7M) regardless of
+    whether the material name explicitly carries "NACE"."""
+    if not service:
+        return False
+    return bool(_SOUR_SERVICE_PATTERN.search(service))
+
+
 def _is_cpvc(material: str) -> bool:
     """Project digit 60 — CPVC (Chlorinated Polyvinyl Chloride). Used for
     Sewage / Hypochlorite service. HDG bolting + PTFE/EPDM full-face gasket."""
@@ -190,8 +234,23 @@ def face_type(rating: str, material: str) -> dict:
 # Coating: Xylan dual-layer (XYLAR 2 + XYLAN 1070) for marine / external corrosion.
 _BOLT_COATING = "XYLAR 2 + XYLAN 1070 coated with minimum combined thickness of 50µm"
 
-def bolting(material: str) -> dict:
-    nace = _is_nace(material)
+def bolting(material: str, service: Optional[str] = None) -> dict:
+    """Project bolting rule — purely material-driven (no service input):
+
+      • LTCS (any variant)         → A320 L7M  /  A194 7ML
+      • CS / CS NACE (any)         → A193 B7M  /  A194 2HM
+      • SS316L (any)               → A320 L7M  /  A194 7M
+      • DSS / SDSS (any)           → A453 Gr. 660 (both stud and nut)
+      • CuNi / Copper / GRE        → A193 B7M  /  A194 2HM (Xylan)
+      • Titanium                   → A193 B7M (Xylan + insulating gasket note)
+      • CPVC                       → HDG B7 / 2H (CPVC washers, special)
+
+    The project's "Note" doc (May 2026) defines the implementable
+    rule as "SPEC name contains L → L7M/7ML, else CS family → B7M/2HM".
+    `service` is accepted for backward-compat with the earlier
+    service-aware path but NOT consulted — the rule is class-code-
+    driven via the material's family.
+    """
     ltcs = _is_ltcs(material)
     ss316l = _is_ss316l(material)
     duplex = _is_duplex_family(material)
@@ -234,18 +293,37 @@ def bolting(material: str) -> dict:
             "stud":    f"{stud}, {_BOLT_COATING}",
             "hex_nut": f"{nut}, {_BOLT_COATING}",
         }
-    # SS316L (digit 10) — project rule: A320 L7M / A194 7M for ALL ratings,
-    # NACE or not. Low-temp-capable + hardness-controlled for sour service.
+    # ── SS316L (digit 10) ──
+    # A320 L7M / A194 7M for ALL ratings, NACE or not. Low-temp-capable
+    # + hardness-controlled for sour service.
     if ss316l:
         stud, nut = "ASTM A 320 Gr. L7M", "ASTM A 194 Gr. 7M"
-    elif ltcs and nace:
-        stud, nut = "ASTM A 320 Gr. L7M", "ASTM A 194 Gr. 7M"
+    # ── LTCS family (A1L … G1L, A1LN … G1LN) ──
+    # Project rule: ANY class whose SPEC name contains "L"
+    # (i.e. material is LTCS, with or without NACE) uses
+    #     A320 L7M  /  A194 7ML
+    # `7ML` is the project's nut designation — note this is the
+    # project's spec convention rather than the strict ASTM A194
+    # Section 5 grade list (which terminates at "Gr. 7M"). Kept
+    # verbatim to match the project's reference PMS Excel.
     elif ltcs:
-        stud, nut = "ASTM A 320 Gr. L7",  "ASTM A 194 Gr. 7"
-    elif nace:
-        stud, nut = "ASTM A 193 Gr. B7M", "ASTM A 194 Gr. 2HM"
+        stud, nut = "ASTM A 320 Gr. L7M", "ASTM A 194 Gr. 7ML"
+    # ── CS family (digits 1 / 2 — A1 … G1, A1N … G1N) ──
+    # Project rule: ALL Carbon Steel classes — plain CS AND CS NACE —
+    # use hardness-controlled
+    #     A193 B7M  /  A194 2HM
+    # regardless of service. This is a blanket "always conservative"
+    # promotion the project applies across every CS spec to
+    # eliminate spec-error risk (engineer can't accidentally pick
+    # B7 where the line later sees H₂S, sour produced water, etc.).
+    # Cost premium ~30% — small compared to the SSC-failure risk of
+    # B7 in a downstream-soured stream.
+    #
+    # `service` parameter is accepted (compat with the earlier
+    # service-aware code path) but NOT consulted — the project rule
+    # is purely material-driven.
     else:
-        stud, nut = "ASTM A 193 Gr. B7",  "ASTM A 194 Gr. 2H"
+        stud, nut = "ASTM A 193 Gr. B7M", "ASTM A 194 Gr. 2HM"
     return {
         "stud":    f"{stud}, {_BOLT_COATING}",
         "hex_nut": f"{nut}, {_BOLT_COATING}",
@@ -666,12 +744,15 @@ def build(rating: str, material: str, flange_moc: Optional[str],
           class_code: Optional[str] = None,
           service: Optional[str] = None) -> dict:
     """One-shot bundle of all five sections for code_factors.flange_extras.
-    `service` is only used by GRE — selects EPDM (A50/A52) vs CNAF (A51)."""
+    `service` participates in:
+      • gasket  — selects EPDM (A50/A52) vs CNAF (A51) for GRE.
+      • bolting — promotes B7/L7 to B7M/L7M for sour services, even
+                  when the material name itself isn't tagged NACE."""
     face = face_type(rating, material)
     return {
         "face":      face,
         "type":      flange_type(rating, material),
-        "bolting":   bolting(material),
+        "bolting":   bolting(material, service),
         "gasket":    gasket(face["code"], material, service),
         "spectacle": spectacle(flange_moc),
         "valves":    valves(rating, material, class_code),
