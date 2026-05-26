@@ -424,6 +424,30 @@ def compute_wall_thickness_rows(
         if sch_status_val == "NOT OK" and calc_thk is not None:
             sel_thk_mm_display = f"{math.ceil(calc_thk * 10) / 10:.1f}"
 
+        # ── User-facing SEL.THK status ───────────────────────────────
+        # `sch_status` says only "did a stock B36.10M / B36.19M schedule
+        # satisfy calc_thk?". That's an internal detail — rows that fall
+        # back to a custom-fab WT (calc_thk rounded UP to 0.1 mm) DO
+        # satisfy the requirement and should report OK on the printed
+        # status column. So we recompute the status here against the
+        # EFFECTIVE wall thickness the engineer will see / order:
+        #   • OK rows:      sel_thk_mm (the picked schedule's WT)
+        #   • NOT OK rows:  ceil(calc_thk, 0.1)  — the custom-fab WT
+        # NOT OK only fires if even that effective value is below calc_thk
+        # (defensive — with current logic it never is, since ceil rounds
+        # up by construction).
+        if sel_thk_mm_display is not None:
+            try:
+                effective_sel_thk = float(sel_thk_mm_display)
+            except (TypeError, ValueError):
+                effective_sel_thk = None
+        else:
+            effective_sel_thk = sel_thk_mm
+        if effective_sel_thk is None or calc_thk is None:
+            sel_thk_status_val: Optional[str] = None
+        else:
+            sel_thk_status_val = "OK" if effective_sel_thk + 1e-9 >= calc_thk else "NOT OK"
+
         out.append({
             "nps":                str(r["nps"]),
             "nps_decimal":        float(r["nps_decimal"]),
@@ -438,6 +462,7 @@ def compute_wall_thickness_rows(
             "sel_thk_mm":         sel_thk_mm,
             "sel_thk_mm_display": sel_thk_mm_display,
             "sch_status":         sch_status_val,
+            "sel_thk_status":     sel_thk_status_val,
             "mawp_barg":          mawp_barg,
             "margin_pct":         margin_pct,
         })

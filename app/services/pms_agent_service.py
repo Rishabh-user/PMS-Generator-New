@@ -980,6 +980,11 @@ def _design_caution_reason(
         warning is material-keyed — it tells the user "if you pick the
         CS variant, beware of creep" regardless of how many other
         materials are also shown.
+      • DSS / SDSS at T > 315 °C → 475 °C embrittlement zone.
+        ASME B16.5 Group 2.8 Note (1) carries a hard temperature cap:
+        "This steel may become brittle after service at moderately
+        elevated temperatures. Not to be used over 315 °C." Applies
+        to F51 / F53 / F55 (S31803 / S32750 / S32760).
       • Any design T above the standard envelope cap (300 °C) →
         "new-spec" zone — the PMS is renamed and the WT calc switches
         to single-point mode. Fires universally because T > 300 °C is
@@ -1002,6 +1007,21 @@ def _design_caution_reason(
                 "carbon steel above 370 °C enters the creep and "
                 "graphitization zone (ASME B16.5 Note 1 caps prolonged "
                 "use at 425 °C)"
+            )
+
+    # Duplex / super-duplex stainless brittle warning per
+    # ASME B16.5 Group 2.8 Note (1) — F51 / F53 / F55 (S31803 /
+    # S32750 / S32760) become brittle after sustained service at
+    # moderately elevated temperatures. Standard hard-caps use at
+    # 315 °C, well below where the P-T curve runs out.
+    for m in matches:
+        mat = m.get("material") or ""
+        if re.search(r"\b(?:SDSS|DSS)\b", mat, re.I) and design_t_c > 315:
+            return (
+                "duplex / super-duplex stainless above 315 °C may become "
+                "brittle (ASME B16.5 Group 2.8 Note 1) — DSS / SDSS "
+                "shouldn't be used at these temperatures in sustained "
+                "service"
             )
 
     # New-spec zone: any material above the 300 °C envelope cap.

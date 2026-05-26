@@ -787,6 +787,24 @@ function computeWallThicknessRows(state, designPbarg, designTc) {
             }
         }
 
+        // User-facing SEL.THK status — flag NOT OK only when the
+        // EFFECTIVE wall thickness the engineer will see (the schedule's
+        // WT for OK rows, or calc_thk rounded UP to 0.1 mm for NOT OK
+        // rows) is below calc_thk. Custom-fab rounded-up rows clear the
+        // requirement by construction, so they show OK even though the
+        // stock-schedule library couldn't satisfy calc_thk. Mirrors the
+        // backend logic in wt_calc.compute_wall_thickness_rows.
+        let effective_sel_thk = null;
+        if (sch_status === 'NOT OK' && calcThk != null) {
+            effective_sel_thk = Math.ceil(calcThk * 10) / 10;
+        } else if (sel_thk_mm != null) {
+            effective_sel_thk = sel_thk_mm;
+        }
+        const sel_thk_status =
+            (effective_sel_thk != null && calcThk != null)
+                ? (effective_sel_thk + 1e-9 >= calcThk ? 'OK' : 'NOT OK')
+                : null;
+
         return {
             nps:      r.nps,
             od_mm:    D,
@@ -799,6 +817,7 @@ function computeWallThicknessRows(state, designPbarg, designTc) {
             sch_display,
             sel_thk_mm,
             sch_status,
+            sel_thk_status,
             mawp_barg,
             margin_pct,
         };
@@ -2293,8 +2312,18 @@ function populateWallThicknessTable(state, designPbarg, designTc) {
                                       ? (Math.ceil(r.calc_thk_mm * 10) / 10).toFixed(1)
                                       : blank))
                               : (r.sel_thk_mm != null ? r.sel_thk_mm.toFixed(2) : blank);
-            const statusDisp  = r.sch_status != null ? r.sch_status : blank;
-            const statusClass = r.sch_status === 'OK' ? 'wt-ok' : (notOk ? 'wt-alert' : '');
+            // User-facing STATUS column compares the displayed SEL.THK
+            // (= sel_thk_mm for OK rows, ceil(calc_thk, 0.1) for NOT OK
+            // rows) against calc_thk — so a custom-fab row whose rounded
+            // wall clears the requirement is correctly marked OK. The
+            // SCH and SEL.THK cells above still key off `sch_status` /
+            // `notOk` because those represent "did a stock schedule fit"
+            // (a different question from "is the row engineering-OK").
+            const selStatusVal = r.sel_thk_status != null ? r.sel_thk_status : blank;
+            const statusDisp   = selStatusVal;
+            const statusClass  = r.sel_thk_status === 'OK'
+                                ? 'wt-ok'
+                                : (r.sel_thk_status === 'NOT OK' ? 'wt-alert' : '');
 
             return `
                 <tr>
@@ -2843,23 +2872,13 @@ function wireReportInputs(state) {
     const joint = document.getElementById('rJointType');
     const jointRef = document.getElementById('rJointRef');
 
-    // P-T curve data for two-way auto-sync between the Design P and
-    // Design T inputs. Setting `element.value` from JS does NOT refire
-    // the `input` event in the browser, so no infinite loop — but we
-    // still gate with `syncing` defensively.
-    const temps     = (state.pt && state.pt.temperatures_c) || [];
-    const pressures = (state.pt && state.pt.pressures_barg) || [];
-    const hasCurve = temps.length > 0 && pressures.length > 0;
-    let syncing = false;
-
-    // Format a pressure number for the input box — 1 decimal for whole
-    // values (10.2 not 10.20), 2 decimals otherwise so 14.46 doesn't
-    // round to 14.5 (which can falsely flag the next rating as inadequate).
-    const fmtPressure = (p) =>
-        (Math.abs(p * 10 - Math.round(p * 10)) < 1e-6) ? p.toFixed(1) : p.toFixed(2);
-    const fmtTemp = (t) =>
-        Number.isInteger(t) ? String(t) : t.toFixed(1);
-
+    // Design P and Design T are INDEPENDENT — editing one never
+    // overwrites the other. The previous two-way curve auto-sync was
+    // removed per project request so the engineer can dial each value
+    // in by hand without one input clobbering the other. Curve
+    // interpolation still happens server-side when the user clears a
+    // field and re-resolves; the live `refresh()` re-runs the WT calc
+    // / adequacy banner on every keystroke.
     const refresh = () => {
         const dp = parseFloat(pBarg.value) || 0;
         const dt = parseFloat(tC.value) || 0;
@@ -2885,42 +2904,12 @@ function wireReportInputs(state) {
         renderDatasheetTab(state, dp, dt);
     };
 
-    // ── Two-way auto-sync between Design P and Design T ───────────────
-    // When the engineer edits Design T (°C), interpolate the curve's
-    // rated P at that T and write it into Design P (barg). When they
-    // edit Design P (barg), inverse-interpolate the T at which the
-    // curve hits that P and write it into Design T (°C). Both writes
-    // are silent (setting `.value` doesn't fire input), and we still
-    // gate with `syncing` to be safe.
-
-    tC.addEventListener('input', () => {
-        if (syncing || !hasCurve) { refresh(); return; }
-        const t = parseFloat(tC.value);
-        if (Number.isFinite(t)) {
-            const p = interpolatePressure(temps, pressures, t);
-            if (p != null) {
-                syncing = true;
-                pBarg.value = fmtPressure(p);
-                syncing = false;
-            }
-        }
-        refresh();
-    });
-
-    pBarg.addEventListener('input', () => {
-        if (syncing || !hasCurve) { refresh(); return; }
-        const p = parseFloat(pBarg.value);
-        if (Number.isFinite(p)) {
-            const t = interpolateTemperature(temps, pressures, p);
-            if (t != null) {
-                syncing = true;
-                tC.value = fmtTemp(t);
-                syncing = false;
-            }
-        }
-        refresh();
-    });
-
+    // Independent inputs — each edit only triggers `refresh()` so the
+    // live downstream tables / adequacy banner stay in sync. No cross-
+    // sync: typing in Design T leaves Design P exactly where the
+    // engineer set it, and vice versa.
+    tC.addEventListener('input', refresh);
+    pBarg.addEventListener('input', refresh);
     joint.addEventListener('input', refresh);
     refresh();
 }
@@ -2953,14 +2942,28 @@ function showReport(state) {
     const dp = document.getElementById('downloadPdfBtn');
     if (dp) dp.disabled = false;
 
-    // Pre-fill the editable design conditions ONLY if the user hasn't
-    // typed anything yet — preserve their edits across re-resolves.
-    // Use 2 dp for pressure so the auto-fill doesn't round 14.46 → 14.5,
-    // which would then exceed the rating and falsely flag INADEQUATE.
+    // Pre-fill the editable design conditions. The seed policy is:
+    //   • CLASS CHANGE (rating / material / CA / service changed since
+    //     the last resolve) → overwrite both inputs with the new
+    //     class's defaults, even if the user had typed in values for
+    //     the previous class. Otherwise stale P/T from the OLD class
+    //     would carry over and silently flag adequacy against the
+    //     wrong curve.
+    //   • SAME CLASS re-resolve (e.g. user just tweaked a design field
+    //     and we re-fetched the snapshot) → preserve their typed
+    //     values; only fill if the input is currently empty.
+    //
+    // Mirrors the SPA's `lastSeededKeyRef` gate in PMSGeneratorPage.tsx
+    // so both UIs reseed defaults consistently on class change. Use 2 dp
+    // for pressure so 14.46 doesn't round to 14.5 (which can exceed the
+    // rating and falsely flag INADEQUATE).
+    const seedKey = `${state.rating}|${state.material}|${state.ca}|${state.service}`;
+    const classChanged = window._lastSeededClassKey !== seedKey;
     const pIn = document.getElementById('rDesignPressure');
     const tIn = document.getElementById('rDesignTemperature');
-    if (pIn && !pIn.value) pIn.value = fmt(state.designP, 2);
-    if (tIn && !tIn.value) tIn.value = fmt(state.designT, 0);
+    if (pIn && (classChanged || !pIn.value)) pIn.value = fmt(state.designP, 2);
+    if (tIn && (classChanged || !tIn.value)) tIn.value = fmt(state.designT, 0);
+    window._lastSeededClassKey = seedKey;
 
     populateBanner(state);
     populateStandardBar(state);
