@@ -195,6 +195,34 @@ def _ds_fmt_nps(n):
     return str(n)
 
 
+def _split_pipe_moc(pipe: str) -> tuple[str, str]:
+    """Split a Pipe MOC string into (small-bore, large-bore) cells for
+    the two-cell render in the Excel Pipe Data section.
+
+    Input shapes (from `fitting_specs.lookup` for CS-family materials):
+      • `"ASTM A 106 Gr. B / API 5L Gr. B"` — small / large bore split,
+        slash separator. Any trailing parenthetical (e.g. "(hot-dip
+        galvanised, ASTM A 53)") applies to both grades and is kept
+        on the welded large-bore side.
+      • `"API 5L Gr. X60 PSL-2"` — single spec, no slash. Used for
+        X60-promoted classes (1500# / 2500# CS NACE) which are welded
+        line pipe only, no seamless variant exists. Render the same
+        string on both halves.
+
+    Returns (small_text, large_text) — always a 2-tuple of strings.
+    """
+    if not pipe:
+        return ("—", "—")
+    # Split at the first "/" — keep everything before as small-bore
+    # seamless spec, everything after as large-bore welded spec.
+    if "/" in pipe:
+        sm, _, lg = pipe.partition("/")
+        return (sm.strip(), lg.strip())
+    # Single spec (X60 promotion or any unsplitable string) — render
+    # on both halves so the row reads consistently end-to-end.
+    return (pipe.strip(), pipe.strip())
+
+
 # ── Cell writers ────────────────────────────────────────────────────
 def _ds_style(cell, *, font=None, fill=None, align=None, border=True):
     if font   is not None: cell.font = font
@@ -520,7 +548,17 @@ def _ds_build_pt(ws, row, ctx, total_cols):
 
 
 # ── Pipe TYPE / Ends per material (mirrors JS helpers) ─────────────
-def _ds_pipe_type(material, service):
+def _ds_pipe_type(material, service, pipe_moc=None):
+    """Return (small_bore_type, large_bore_type, merge_flag) for the
+    Pipe Data → TYPE row.
+
+    `pipe_moc` lets us detect X60-promoted CS NACE classes (1500# /
+    2500# routes to "API 5L Gr. X60 PSL-2") and emit LSAW-only,
+    because X60 line pipe is welded-only — there's no seamless
+    variant manufactured at that grade. Without this hint we'd
+    print the default "Seamless / LSAW, 100% RT" split for X60
+    classes, which is physically impossible.
+    """
     if _ds_is_cuni(material):
         return ("Seamless", "Seam Welded", False)
     if _ds_is_copper(material):
@@ -535,6 +573,16 @@ def _ds_pipe_type(material, service):
     u = (material or "").upper()
     if any(k in u for k in ("SS316", "TP316", "DSS", "SDSS")):
         return ("Seamless", "Welded, 100% RT", False)
+    # X60-promoted CS NACE (1500# / 2500#): welded line pipe only,
+    # no seamless variant exists. Detect via the pipe MOC string —
+    # if it starts with "API 5L" without an "ASTM A 106" seamless
+    # counterpart, we're on the X60 (or future X65/X70) path.
+    if pipe_moc:
+        u_pipe = pipe_moc.upper()
+        if ("API 5L" in u_pipe and "A 106" not in u_pipe and "A106" not in u_pipe):
+            return ("LSAW, 100% RT", "LSAW, 100% RT", True)
+    # Plain CS / CS NACE (non-promoted) — small-bore seamless,
+    # large-bore LSAW welded.
     return ("Seamless", "LSAW, 100% RT", False)
 
 
@@ -642,7 +690,12 @@ def _ds_build_pipe_data(ws, row, ctx, total_cols):
         _data_row("WT. mm", [_wt(r)  for r in wt_rows])
 
     # TYPE / MOC / Ends — split across small/large or merged based on material.
-    ptype_sm, ptype_lg, ptype_merge = _ds_pipe_type(material, service)
+    # Pass the resolved pipe MOC so `_ds_pipe_type` can detect
+    # X60-promoted CS NACE (1500# / 2500#) and emit LSAW-only —
+    # X60 line pipe has no seamless variant.
+    ptype_sm, ptype_lg, ptype_merge = _ds_pipe_type(
+        material, service, pipe_moc=ctx["fitting_specs"].get("pipe"),
+    )
     if ptype_merge or ptype_sm == ptype_lg:
         row = _ds_label_value_row(ws, row, "TYPE", ptype_sm, total_cols)
     else:
@@ -664,11 +717,35 @@ def _ds_build_pipe_data(ws, row, ctx, total_cols):
         mat_u = (material or "").upper()
         is_plain_cs = re.fullmatch(r"\s*CS\s*(NACE)?\s*", mat_u) and not _ds_is_galv(material)
         if is_plain_cs:
+            # Plain CS (and CS NACE, and CS GALV / Epoxy-Lined which
+            # fall through to this branch via the slash format) render
+            # the Pipe MOC row as a small/large bore split.
+            #
+            # Pipe MOC strings have two shapes depending on the class:
+            #
+            #   1. SLASHED  — e.g. "ASTM A 106 Gr. B / API 5L Gr. B"
+            #      Means small-bore seamless (A 106) / large-bore welded
+            #      (API 5L). Split at the FIRST "/" and put each half
+            #      in its own cell. Any trailing parenthetical applies
+            #      to both halves and is preserved on the right side
+            #      where the welded spec lives.
+            #
+            #   2. SINGLE   — e.g. "API 5L Gr. X60 PSL-2"
+            #      Means the class is X60-promoted (1500#/2500# CS NACE)
+            #      — X60 is welded line pipe only, no seamless variant
+            #      exists. Render the same string on both halves so the
+            #      row reads consistently.
+            #
+            # (Before this fix the right cell was hardcoded to
+            # "API 5L Gr. B", which produced "X60 / Gr. B" inconsistency
+            # for promoted classes and duplicated info for the slashed
+            # plain-CS classes.)
+            sm_text, lg_text = _split_pipe_moc(pipe)
             sm_span = (data_cols + 1) // 2
             lg_span = data_cols - sm_span
             _ds_write(ws, row, 1, "MOC", font=DS_FONT_LABEL, fill=DS_FILL_LABEL, align=DS_LABEL_AL)
-            _ds_write(ws, row, 2, pipe, span=sm_span, font=DS_FONT_VAL_B, align=DS_CENTER)
-            _ds_write(ws, row, 2 + sm_span, "API 5L Gr. B", span=lg_span,
+            _ds_write(ws, row, 2, sm_text, span=sm_span, font=DS_FONT_VAL_B, align=DS_CENTER)
+            _ds_write(ws, row, 2 + sm_span, lg_text, span=lg_span,
                       font=DS_FONT_VAL_B, align=DS_CENTER)
             row += 1
         else:

@@ -58,23 +58,31 @@ _DEFAULT_JOINT    = "Seamless"
 # provides one (e.g. CuNi at 150# has no indexed P-T curve in the
 # project's pt_tables.json).
 _FALLBACK_DESIGN_T_C = 50.0
-# Cap the seeded default temperature so a freshly-opened page reads
-# near typical operating conditions. ASME B16.5 Group 1.1 / 2.3 / 2.8
-# curves now extend to 538 / 450 / 400 °C, but defaulting that hot
-# makes the seeded pressure tiny. With this cap, the SPA opens at
-# 300 °C with the curve-interpolated rated pressure at 300 °C.
+# 300 °C serves a dual purpose by project preference:
 #
-# This same value is the "new-spec threshold" — design T above this
-# is considered a customized PMS (single-point WT mode + renamed
-# class code).
-_DEFAULT_SEED_TEMP_CAP_C = 300.0
+#   1. Default-seed cap. When both Design P and Design T are blank,
+#      the snapshot seeds Design T at `min(curve_max, 300)` so the
+#      page opens at typical-operating conditions even for hot-curve
+#      materials (CS / SS316L / DSS / SDSS). Tubing-class materials
+#      with curve max < 300 still default to their own curve max
+#      (e.g. Tubing A SS316L → 60 °C).
+#   2. New-spec threshold. Design T strictly above 300 °C is treated
+#      as a customized PMS — the class code is renamed to
+#      "New-spec-[base]", the SPA shows the amber engineering-review
+#      banner, and WT calc switches from envelope mode (min cold-end
+#      + max @ design T) to single-point mode (design T only).
+#
+# Both behaviours share the same constant because they share the same
+# engineering line: 300 °C is the upper edge of the "standard
+# operating window" the published PMS variants are tuned for.
+_NEW_SPEC_THRESHOLD_C = 300.0
 
 
 def is_customized_zone(design_t_c: Optional[float]) -> bool:
     """Single source of truth for 'is this design in the customized
     (new-spec) zone?'. Both the chat-agent enumerator and the snapshot
     builder call this so they agree on naming / WT mode."""
-    return design_t_c is not None and float(design_t_c) > _DEFAULT_SEED_TEMP_CAP_C
+    return design_t_c is not None and float(design_t_c) > _NEW_SPEC_THRESHOLD_C
 
 
 def customized_class_code(base_class_code: Optional[str], design_t_c: Optional[float]) -> Optional[str]:
@@ -103,7 +111,12 @@ def effective_design_temp(
                          If P exceeds the cold-end max, the helper
                          clamps to T[0] (cold-end T) — the same as
                          `interpolate_temperature`.
-      • both null      → cap at min(hottest.T, 300 °C).
+      • both null      → `min(curve_max, 300 °C)`. Materials whose
+                         curve runs below 300 (e.g. Tubing A → 60 °C)
+                         default to their own curve max; hot-curve
+                         materials (CS, SS316L, DSS) default to the
+                         300 °C standard-operating cap so the fresh
+                         page opens inside the standard envelope.
       • no curve / no inputs → None (caller decides what to do).
     """
     if design_temp_c is not None:
@@ -124,7 +137,7 @@ def effective_design_temp(
     hottest = pt.get("hottest_point") or {}
     hot_T = hottest.get("temperature_c")
     if hot_T is not None:
-        return min(float(hot_T), _DEFAULT_SEED_TEMP_CAP_C)
+        return min(float(hot_T), _NEW_SPEC_THRESHOLD_C)
     return None
 
 # ── Design-Conditions form schema (drives Section 2 in the SPA) ───
@@ -253,14 +266,15 @@ def _seed_defaults(
     conditions.
 
     Seeding rules (when the field is None):
-      • design_temp_c        ← `min(hottest_point.T, 300 °C)`.
-          The ASME B16.5 Group 1.1 / 2.3 / 2.8 curves extend to 538 /
-          450 / 400 °C, but defaulting that hot pulls the rated P way
-          down. Capping at 300 °C keeps the seeded operating point
-          near typical operating conditions; the engineer can still
-          type any T up to the curve's published max.
+      • design_temp_c        ← `min(curve_max, 300 °C)`. Caps the
+          fresh-open default at the standard-operating envelope so
+          hot-curve materials (CS at 538, SS316L at 450, DSS at 400)
+          don't open as Customized PMS by default. Tubing-class and
+          other narrow-curve materials still default to their own
+          curve max (e.g. Tubing A SS316L → 60 °C, unchanged from
+          the screenshot).
       • design_pressure_barg ← curve-interpolated rated P **at the
-          capped seeded T**. The design point lands exactly on the
+          seeded (capped) T**. The design point lands exactly on the
           curve → adequacy banner shows ADEQUATE by default.
 
     Path A (typical) — P-T curve indexed for this material: seed both
@@ -297,9 +311,11 @@ def _seed_defaults(
     if seeded_t is None:
         hot_T = hottest.get("temperature_c")
         if hot_T is not None:
-            # Cap at 300 °C so the seeded value stays near typical
-            # operating conditions even when the curve runs to 538 °C.
-            seeded_t = min(float(hot_T), _DEFAULT_SEED_TEMP_CAP_C)
+            # Cap at 300 °C so the fresh-open default stays inside
+            # the standard-operating envelope even when the curve
+            # runs to 538 °C (CS) / 450 °C (SS316L). Narrow-curve
+            # materials (Tubing A → 60 °C) keep their own curve max.
+            seeded_t = min(float(hot_T), _NEW_SPEC_THRESHOLD_C)
     if seeded_t is None:
         seeded_t = _FALLBACK_DESIGN_T_C
 

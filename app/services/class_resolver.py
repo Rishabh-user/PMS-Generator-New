@@ -190,6 +190,42 @@ def _tubing_variant(rating: str) -> str:
     return m.group(1).upper() if m else ""
 
 
+def _effective_material(material: str, ca: str) -> str:
+    """Apply auto-NACE promotion BEFORE downstream lookups so the
+    stress curve, pipe MOC, fitting specs, and valve NACE-trim notes
+    all agree with the class code's N suffix.
+
+    Example bug this prevents:
+      Input  → rating=2500#, material='CS',      ca='6 mm'
+      Class  → G2N           (N suffix auto-applied for CS + 6mm)
+      Before fix:
+        stress = 20,000 psi (A106 Gr B table)   ← inconsistent
+        pipe   = ASTM A 106 Gr. B / API 5L Gr. B ← inconsistent
+      After fix:
+        stress = 25,000 psi (X60 PSL-2 table)   ← matches G2N
+        pipe   = API 5L Gr. X60 PSL-2            ← matches G2N
+
+    Without this, the same class code (G2N) would produce two
+    different engineering snapshots depending on whether the user
+    typed 'CS' or 'CS NACE' — even though the class code says the
+    SAME thing in both cases.
+
+    Rule source: `class_naming.json → suffix_rules.auto_nace_combos`.
+    Currently only `CS + 6 mm` is auto-promoted; the helper supports
+    additional combos in that JSON list automatically."""
+    rules = _naming_rules().get("suffix_rules") or {}
+    base, is_nace, is_low = _material_token(material)
+    if is_nace:
+        return material  # already explicit — no promotion needed
+    ca_tok = _ca_token(ca)
+    for combo in rules.get("auto_nace_combos", []):
+        combo_base, _, _ = _material_token(combo.get("material", ""))
+        if combo_base == base and _norm(combo.get("ca", "")) == ca_tok:
+            # Promote — preserve the LTCS marker if the input was LTCS.
+            return "LTCS NACE" if is_low else "CS NACE"
+    return material
+
+
 _GRE_MATERIAL_RE      = re.compile(r"(?i)\bGRE\b|EPOXY\s*FIBRE|Glass.*Reinforced")
 _GRE_HYPOCHLORITE_RE  = re.compile(r"(?i)Hypochlorite|BONSTRAND")
 _GRE_SPECIAL_RE       = re.compile(r"(?i)\bSpecial\b")
@@ -307,10 +343,21 @@ def resolve(rating: str, material: str, ca: str, service: Optional[str] = None) 
     (unknown rating, or unknown material/CA pair — extend
     `class_naming.json` to fix)."""
     parts = derive_class_code(rating, material, ca, service)
+    # Auto-NACE-promotion: if the (material, CA) combo triggers a NACE
+    # auto-suffix on the class code, all downstream lookups (stress
+    # curve, pipe MOC, fitting specs, valve NACE-trim notes) need to
+    # see the promoted material — otherwise the snapshot reports a
+    # class like G2N but uses the pre-promotion CS stress curve
+    # (20,000 psi A106) instead of the NACE X60 curve (25,000 psi
+    # at 1500#/2500#). The promoted string is internal only — the
+    # user's typed material is still echoed back via the SPA form.
+    effective_material = _effective_material(material, ca)
     # `service` is passed through so pt_lookup can swap in service-bound
     # alternates (e.g. GRE + Hypochlorite → BONSTRAND 50000C curve).
-    pt    = pt_lookup.find(rating, material, service=service)
-    code_factors = _build_code_factors(material, pt, rating, parts["class_code"], service)
+    pt    = pt_lookup.find(rating, effective_material, service=service)
+    code_factors = _build_code_factors(
+        effective_material, pt, rating, parts["class_code"], service,
+    )
 
     return {
         **parts,
