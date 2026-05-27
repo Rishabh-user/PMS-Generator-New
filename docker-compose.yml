@@ -1,0 +1,50 @@
+version: "3.9"
+
+# Local Postgres for PMS Generator development.
+#
+# Boots a Postgres 16 instance on port 5434 (chosen to avoid clashing
+# with the VSW backend Postgres which uses 5433). The app reads the
+# connection string from DATABASE_URL in .env — point it at this
+# container with:
+#
+#   DATABASE_URL=postgresql://pms_user:pms_password@localhost:5434/pms_generator
+#
+# Usage:
+#   docker compose up -d         # start in background
+#   docker compose logs -f       # tail logs (see "database system is ready")
+#   docker compose down          # stop (keeps data on the named volume)
+#   docker compose down -v       # stop and DROP all data
+#
+# Data persists in the named volume `pms_pg_data`. To start fresh, run
+# `docker compose down -v` and bring it back up.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pms_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pms_user
+      POSTGRES_PASSWORD: pms_password
+      POSTGRES_DB: pms_generator
+      # Pin locale so date / sort behaviour matches production.
+      LANG: C.UTF-8
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+    ports:
+      # host:container — host 5434 keeps clear of the VSW Postgres (5433)
+      # and the default Postgres install (5432).
+      - "5434:5432"
+    volumes:
+      - pms_pg_data:/var/lib/postgresql/data
+      # Optional: drop any *.sql files into ./db/init/ to have them
+      # executed once on first boot (when the data volume is empty).
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pms_user -d pms_generator"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pms_pg_data:
+    name: pms_pg_data

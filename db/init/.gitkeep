@@ -1,0 +1,8 @@
+# Place .sql files in this directory to have them executed automatically
+# on the first boot of the Postgres container (when the named volume is
+# empty). Useful for schema bootstrap or seed data.
+#
+# Naming: files are executed in lexical order, so prefix with a number:
+#   01_init_schema.sql
+#   02_seed_projects.sql
+#   ...
