@@ -742,7 +742,10 @@ def sign(
                 )
                 base_status = "PENDING_SIGNATURES"
             else:
-                base_status = rev["status"]
+                # DRAFT → PENDING_SIGNATURES on the very first signature so
+                # subsequent signers (Checker, Reviewer, Approver) can see the
+                # revision is open for sign-off.
+                base_status = "PENDING_SIGNATURES" if rev["status"] == "DRAFT" else rev["status"]
             cur.execute(
                 """SELECT signature_type FROM pms_signatures
                 WHERE revision_id = %s AND revoked = FALSE AND decision = 'APPROVED'""",

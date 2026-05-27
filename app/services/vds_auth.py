@@ -136,16 +136,26 @@ def get_current_user(authorization: Optional[str] = Header(default=None, alias="
 
     # Enrich with role/name from VDS. Tolerates VDS being unreachable.
     vds_record = _fetch_vds_user(token)
+
+    # role_code priority:
+    #   1. VDS /api/auth/me response (live record, most authoritative)
+    #   2. JWT payload claim "role_code" (stamped at login time, stale but usable)
+    #   3. JWT payload claim "role" (some issuers use this key)
+    vds_role = (vds_record.get("role_code") or "").upper() or None
+    jwt_role = (payload.get("role_code") or payload.get("role") or "").upper() or None
+    resolved_role = vds_role or jwt_role
+
     user = {
         "user_id": vds_record.get("user_id") or user_id,
         "email": vds_record.get("email") or email or "",
-        "role_code": (vds_record.get("role_code") or "").upper() or None,
+        "role_code": resolved_role,
         "full_name": (
             vds_record.get("full_name")
             or " ".join(filter(None, [
                 vds_record.get("first_name"),
                 vds_record.get("last_name"),
             ]))
+            or payload.get("full_name")
             or email
             or user_id
         ),
