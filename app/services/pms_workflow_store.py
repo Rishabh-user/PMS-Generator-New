@@ -446,10 +446,19 @@ def get_piping_class_for_revision(revision_id: str) -> Optional[str]:
         return row["piping_class"] if row else None
 
 
-def upsert_snapshot(revision_id: str, payload: dict, user: dict) -> None:
-    """Update the three editable fields (service / design_pressure_barg /
-    design_temp_c) on the snapshot. The full payload is merged so the
-    frozen non-editable fields are preserved verbatim."""
+def upsert_snapshot(revision_id: str, payload: dict, user: dict, *, full_replace: bool = False) -> None:
+    """Update the snapshot for a revision.
+
+    When *full_replace* is False (the default) only the three editable
+    knobs (service / design_pressure_barg / design_temp_c) are merged on
+    top of the stored payload — all other keys are preserved verbatim.
+    This prevents float-precision round-trip differences from incorrectly
+    blocking saves.
+
+    When *full_replace* is True the incoming payload completely replaces
+    the stored one.  Use this when the frontend has re-run the PMS engine
+    (e.g. after changing design P/T) and needs to persist the full
+    recomputed snapshot."""
     with _connect() as conn, conn.cursor() as cur:
         # Lock the revision and snapshot in one go
         cur.execute("SELECT * FROM pms_revisions WHERE id = %s", (revision_id,))
@@ -486,15 +495,20 @@ def upsert_snapshot(revision_id: str, payload: dict, user: dict) -> None:
             )
             return
 
-        # Merge: start from the stored payload, apply only EDITABLE_KEYS
-        # from the incoming request. All other keys are ignored — this
-        # prevents float-precision round-trip differences (e.g. 17.382 vs
-        # 17.382000000000001 in JSON) from incorrectly blocking saves.
         prev = existing["payload"] or {}
-        merged = dict(prev)
-        for k in EDITABLE_KEYS:
-            if k in payload:
-                merged[k] = payload[k]
+
+        if full_replace:
+            # Full replacement — use the incoming payload as-is.
+            merged = dict(payload)
+        else:
+            # Merge: start from the stored payload, apply only EDITABLE_KEYS
+            # from the incoming request. All other keys are ignored — this
+            # prevents float-precision round-trip differences (e.g. 17.382 vs
+            # 17.382000000000001 in JSON) from incorrectly blocking saves.
+            merged = dict(prev)
+            for k in EDITABLE_KEYS:
+                if k in payload:
+                    merged[k] = payload[k]
 
         cur.execute(
             """UPDATE pms_snapshots
@@ -507,9 +521,12 @@ def upsert_snapshot(revision_id: str, payload: dict, user: dict) -> None:
             cur,
             rev["workflow_id"], revision_id, "ATTACH_SNAPSHOT",
             None, None, user,
-            extra={"editable_changed": [
-                k for k in EDITABLE_KEYS if payload.get(k) != prev.get(k)
-            ]},
+            extra={
+                "full_replace": full_replace,
+                "editable_changed": [
+                    k for k in EDITABLE_KEYS if payload.get(k) != prev.get(k)
+                ],
+            },
         )
 
 
