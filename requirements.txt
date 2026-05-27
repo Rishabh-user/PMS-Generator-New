@@ -8,6 +8,12 @@ anthropic>=0.40.0,<1.0.0
 openpyxl==3.1.5
 Pillow==10.4.0
 psycopg[binary]>=3.1,<4.0
+# PyJWT — verifies the same JWTs the VDS user-management backend issues,
+# so PMS-Workflow routes can read the bearer token without a separate login.
+PyJWT>=2.8,<3.0
+# httpx — used to call the VDS backend's /api/auth/me to enrich the JWT
+# with role / full-name during PMS-Workflow authentication.
+httpx>=0.27,<1.0
 # Used by `app/services/pdf_exporter.py` to convert the canonical
 # datasheet workbook into a PDF without any system dependencies
 # (no LibreOffice / soffice required on the host).

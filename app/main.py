@@ -19,7 +19,8 @@ from app.routes.export_routes import router as export_router
 from app.routes.pms_agent_routes import router as pms_agent_router
 from app.routes.admin_routes import router as admin_router
 from app.routes.compute_routes import router as compute_router
-from app.services import agent_query_log_store, saved_pms_store, session_store
+from app.routes.pms_workflow_routes import router as pms_workflow_router
+from app.services import agent_query_log_store, pms_workflow_store, saved_pms_store, session_store
 
 
 logging.basicConfig(
@@ -50,6 +51,8 @@ app.include_router(export_router)
 app.include_router(pms_agent_router)
 app.include_router(admin_router)
 app.include_router(compute_router)
+# Revision + 4-signature workflow over PMS datasheets — mirrors VSW.
+app.include_router(pms_workflow_router)
 
 
 @app.on_event("startup")
@@ -61,6 +64,7 @@ def _init_db_tables() -> None:
     session_store.init()
     saved_pms_store.init()
     agent_query_log_store.init()
+    pms_workflow_store.init()
 
 
 @app.get("/", response_class=HTMLResponse)

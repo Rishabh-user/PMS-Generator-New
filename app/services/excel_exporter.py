@@ -455,6 +455,99 @@ def _ds_build_header(ws, row, ctx, total_cols):
     return row
 
 
+# ── 1b. Signatures block (rendered at bottom, after Notes) ───────────
+def _ds_build_signatures(ws, row, ctx, total_cols):
+    """Render the Prepared / Checked / Reviewed / Approved signature footer
+    at the bottom of the sheet, after the Notes section.
+
+    Layout (matches valve-datasheet style):
+
+        ┌──────────────────┬──────────────────┬──────────────────┬──────────────────┐
+        │    PREPARED      │     CHECKED      │    REVIEWED      │    APPROVED      │
+        ├──────────────────┼──────────────────┼──────────────────┼──────────────────┤
+        │  John Smith      │  Jane Doe        │  Pending         │  Pending         │
+        ├──────────────────┼──────────────────┼──────────────────┼──────────────────┤
+        │  01-Jan-2026     │  02-Jan-2026     │                  │                  │
+        └──────────────────┴──────────────────┴──────────────────┴──────────────────┘
+
+    Always renders all 4 slots — unsigned ones show "Pending".
+    Colour-coded: green = APPROVED, red = REJECTED, amber = Pending.
+    """
+    # Build a map slot → latest non-revoked signature
+    ORDER = ["PREPARED", "CHECKED", "REVIEWED", "APPROVED"]
+    sigs: list[dict] = ctx.get("signatures") or []
+    sig_map: dict[str, dict] = {}
+    for s in sigs:
+        if not s.get("revoked"):
+            sig_map[s["signature_type"]] = s
+
+    n          = len(ORDER)
+    seg        = total_cols // n
+    last_span  = total_cols - seg * (n - 1)  # last slot gets any leftover cols
+
+    FILL_SIG_HEAD = PatternFill("solid", fgColor="FF0E3A5C")  # navy
+    FILL_APPROVED = PatternFill("solid", fgColor="FFF0FDF4")  # green tint
+    FILL_REJECTED = PatternFill("solid", fgColor="FFFEF2F2")  # red tint
+    FILL_PENDING  = PatternFill("solid", fgColor="FFFFFBE6")  # amber tint
+
+    FONT_HEAD  = Font(name="Calibri", size=9,  bold=True,  color="FFFFFFFF")
+    FONT_NAME  = Font(name="Calibri", size=10, bold=True,  color="FF0F172A")
+    FONT_DATE  = Font(name="Calibri", size=8,  bold=False, color="FF475569")
+    AL_C       = Alignment(horizontal="center", vertical="center", wrap_text=False)
+
+    def _slot_fill(s):
+        if not s:
+            return FILL_PENDING
+        return FILL_APPROVED if s.get("decision") == "APPROVED" else \
+               FILL_REJECTED if s.get("decision") == "REJECTED" else FILL_PENDING
+
+    def _date_str(s) -> str:
+        if not s or not s.get("signed_at"):
+            return ""
+        try:
+            dt = datetime.fromisoformat(str(s["signed_at"]).replace("Z", "+00:00"))
+            return dt.strftime("%d-%b-%Y")
+        except Exception:
+            return str(s["signed_at"])[:10]
+
+    # ── Spacer before block ──
+    ws.row_dimensions[row].height = 6
+    row += 1
+
+    # ── Row A: role headers (navy bar) ──
+    ws.row_dimensions[row].height = 18
+    for i, slot in enumerate(ORDER):
+        col  = i * seg + 1
+        span = seg if i < n - 1 else last_span
+        _ds_write(ws, row, col, slot, span=span,
+                  font=FONT_HEAD, fill=FILL_SIG_HEAD, align=AL_C)
+    row += 1
+
+    # ── Row B: name / "Pending" ──
+    ws.row_dimensions[row].height = 26
+    for i, slot in enumerate(ORDER):
+        col   = i * seg + 1
+        span  = seg if i < n - 1 else last_span
+        s     = sig_map.get(slot)
+        name  = (s or {}).get("signer_name_snapshot") or ""
+        label = name.strip() if name.strip() else "Pending"
+        _ds_write(ws, row, col, label, span=span,
+                  font=FONT_NAME, fill=_slot_fill(s), align=AL_C)
+    row += 1
+
+    # ── Row C: date (empty for pending slots) ──
+    ws.row_dimensions[row].height = 16
+    for i, slot in enumerate(ORDER):
+        col  = i * seg + 1
+        span = seg if i < n - 1 else last_span
+        s    = sig_map.get(slot)
+        _ds_write(ws, row, col, _date_str(s), span=span,
+                  font=FONT_DATE, fill=_slot_fill(s), align=AL_C)
+    row += 1
+
+    return row
+
+
 # ── 2. P-T Rating ───────────────────────────────────────────────────
 def _ds_build_pt(ws, row, ctx, total_cols):
     pt = ctx["pt"] or {}
@@ -1312,6 +1405,132 @@ def build_workbook_obj(
     #     when the scaled content is slightly narrower than full width.
     #   • Explicit print_area covering everything we wrote — so blank
     #     trailing rows / columns don't get pulled into the print job.
+    final_row = row - 1
+    last_col_letter = get_column_letter(total_cols)
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+    ws.page_setup.paperSize   = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth  = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins = PageMargins(
+        left=0.25, right=0.25,
+        top=0.3,   bottom=0.3,
+        header=0.15, footer=0.15,
+    )
+    ws.print_options.horizontalCentered = True
+    ws.print_area = f"A1:{last_col_letter}{final_row}"
+
+    return wb, class_code
+
+
+def build_workbook_from_snapshot(
+    snapshot: dict,
+    rev_code: str = "A0",
+    signatures: Optional[list] = None,
+) -> tuple["Workbook", str]:
+    """Build the Datasheet workbook directly from a **frozen** snapshot dict
+    (as stored in `pms_snapshots.payload`).
+
+    Unlike `build_workbook_obj` this function does NOT re-run the PMS engine.
+    It is the correct entry-point for revision downloads — the frozen payload
+    IS the canonical data for that revision (including any edits the user made
+    to service / design-pressure / design-temp after creation).
+
+    Returns (wb, class_code).
+    """
+    p   = snapshot
+    dc  = p.get("design_conditions") or {}
+    eff = p.get("effective_design_conditions") or {}
+    cf  = p.get("code_factors") or {}
+    fs  = cf.get("fitting_specs") or {}
+    fx  = cf.get("flange_extras") or {}
+    pt  = p.get("pressure_temperature") or {}
+
+    def _pick(*vals):
+        for v in vals:
+            if v not in (None, ""):
+                return v
+        return None
+
+    class_code = p.get("class_code") or p.get("base_class_code") or "PMS"
+
+    snap_rows = (p.get("wall_thickness") or {}).get("rows") or []
+    wt_rows = [
+        {
+            "nps":                r.get("nps"),
+            "nps_decimal":        r.get("nps_decimal"),
+            "od_mm":              r.get("od_mm"),
+            "t_mm":               r.get("t_mm"),
+            "d_over_6":           r.get("d_over_6"),
+            "validity":           r.get("validity"),
+            "tm_mm":              r.get("tm_mm"),
+            "calc_thk_mm":        r.get("calc_thk_mm"),
+            "sch":                r.get("sch_display"),
+            "sel_thk_mm":         r.get("sel_thk_mm"),
+            "sel_thk_mm_display": r.get("sel_thk_mm_display"),
+            "status":             r.get("sch_status"),
+        }
+        for r in snap_rows
+    ]
+
+    nps_count  = max(len(wt_rows), 7)
+    total_cols = max(nps_count + 1, 12)
+
+    wb = Workbook()
+    ws = wb.active
+    _safe_sheet_name = re.sub(r"[\[\]:\\/?*]", "", f"PMS-{class_code}")[:31]
+    ws.title = _safe_sheet_name
+
+    ws.column_dimensions[get_column_letter(1)].width = 22
+    for i in range(2, total_cols + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 10
+
+    # Design conditions — top-level fields first (written by upsert_snapshot),
+    # then fall back to nested sub-dicts (older snapshots).
+    design_p = _pick(p.get("design_pressure_barg"), dc.get("design_pressure_barg"), eff.get("design_pressure_barg"))
+    design_t = _pick(p.get("design_temp_c"),        dc.get("design_temp_c"),        eff.get("design_temp_c"))
+    mdmt     = _pick(p.get("mdmt_c"),               dc.get("mdmt_c"),               eff.get("mdmt_c"))
+    joint    = _pick(p.get("joint_type"),            dc.get("joint_type"),           eff.get("joint_type")) or "Seamless"
+    service  = _pick(p.get("service"),               dc.get("service")) or ""
+
+    ctx = {
+        "class_code":    class_code,
+        "rating":        _pick(p.get("rating")),
+        "material":      _pick(p.get("material")),
+        "ca":            _pick(p.get("corrosion_allowance"), p.get("digit")),
+        "service":       service.strip() or "—",
+        "design_p":      design_p,
+        "design_t":      design_t,
+        "mdmt":          mdmt,
+        "joint_type":    joint,
+        "fitting_specs": fs,
+        "flange_extras": fx,
+        "branch_chart":  cf.get("branch_chart"),
+        "pt":            pt,
+        "wt_rows":       wt_rows,
+        "adequacy":           p.get("adequacy"),
+        "derived_conditions": p.get("derived_conditions"),
+        "wt_summary":         (p.get("wall_thickness") or {}).get("summary"),
+        "wt_flags":           (p.get("wall_thickness") or {}).get("flags"),
+        "materials_tab":      p.get("materials_tab"),
+        "project_notes":      p.get("project_notes") or [],
+        "rev":           rev_code,
+        "signatures":    signatures or [],
+    }
+
+    row = 1
+    row = _ds_build_header(ws, row, ctx, total_cols)
+    row = _ds_build_pt(ws, row, ctx, total_cols)
+    row = _ds_build_pipe_data(ws, row, ctx, total_cols)
+    row = _ds_build_fittings(ws, row, ctx, total_cols)
+    row = _ds_build_flange(ws, row, ctx, total_cols)
+    row = _ds_build_blind_flange(ws, row, ctx, total_cols)
+    row = _ds_build_spectacle(ws, row, ctx, total_cols)
+    row = _ds_build_bolts_gaskets(ws, row, ctx, total_cols)
+    row = _ds_build_valves(ws, row, ctx, total_cols)
+    row = _ds_build_notes(ws, row, ctx, total_cols)
+    row = _ds_build_signatures(ws, row, ctx, total_cols)
+
     final_row = row - 1
     last_col_letter = get_column_letter(total_cols)
     ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
