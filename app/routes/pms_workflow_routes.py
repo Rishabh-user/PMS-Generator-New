@@ -82,6 +82,10 @@ class SignIn(BaseModel):
 
 class SnapshotIn(BaseModel):
     payload: dict
+    # When True the incoming payload fully replaces the stored snapshot
+    # (used after a live recompute in the Edit Snapshot dialog). When
+    # False (default) only the three editable knobs are merged on top.
+    full_replace: bool = False
 
 
 # ============================================================================
@@ -411,7 +415,10 @@ def get_snapshot(revision_id: str, _user=Depends(get_current_user)):
 @router.post("/revisions/{revision_id}/snapshot", status_code=201)
 def upsert_snapshot(revision_id: str, req: SnapshotIn, user=Depends(get_current_user)):
     try:
-        store.upsert_snapshot(revision_id, req.payload or {}, user)
+        store.upsert_snapshot(
+            revision_id, req.payload or {}, user,
+            full_replace=req.full_replace,
+        )
     except StoreError as exc:
         raise _store_to_http(exc)
     return {"ok": True}
