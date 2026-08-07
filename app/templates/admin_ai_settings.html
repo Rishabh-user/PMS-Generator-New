@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Settings · PMS Generator</title>
+    <link rel="icon" type="image/png" href="/static/images/logo.png">
+    <link rel="stylesheet" href="/static/css/styles.css?v=29">
+    <link rel="stylesheet" href="/static/css/admin.css?v=1">
+    <link rel="stylesheet" href="/static/css/admin_ai_settings.css?v=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="top-nav">
+        <div class="nav-left">
+            <div class="logo">
+                <img src="/static/images/logo.png" alt="Logo" class="logo-img" onerror="this.style.display='none'">
+                <div class="logo-divider"></div>
+                <div>
+                    <div class="logo-text">PMS Generator</div>
+                    <div class="logo-subtitle">Admin · AI Settings</div>
+                </div>
+            </div>
+        </div>
+        <div class="nav-center">
+            <a href="/" class="admin-back-link">&larr; Back to generator</a>
+            <a href="/admin" class="admin-back-link">Database browser</a>
+        </div>
+        <div class="nav-right">
+            <div class="api-badge" id="apiBadge"><span class="dot"></span> DB</div>
+        </div>
+    </header>
+
+    <main class="ais-shell">
+        <div class="ais-header">
+            <div class="ais-header-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>
+            </div>
+            <div>
+                <h1>AI Settings</h1>
+                <p>Save several AI providers and pick which one powers the PMS-Agent chat and AI
+                   engineering notes. A new provider is verified with a real test call before it
+                   can be saved or activated, so a bad key can't break either feature.</p>
+            </div>
+        </div>
+
+        <div class="ais-alert" id="aisError" hidden></div>
+        <div class="ais-loading" id="aisLoading">
+            <div class="admin-spinner"></div>
+            Loading saved providers…
+        </div>
+
+        <section class="ais-card" id="aisCard" hidden>
+            <div class="ais-card-header">
+                <div>
+                    <div class="ais-card-title" id="aisCount">0 saved providers</div>
+                    <div class="ais-card-subtitle" id="aisSubtitle" hidden></div>
+                </div>
+                <button type="button" class="admin-btn ais-btn-primary" id="aisAddBtn">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    Add provider
+                </button>
+            </div>
+
+            <div class="ais-row-error" id="aisRowError" hidden></div>
+
+            <div class="ais-empty" id="aisEmpty" hidden>
+                No providers saved yet — add one below, or leave this empty to keep using the
+                .env key.
+            </div>
+
+            <div class="admin-table-wrap ais-table-wrap" id="aisTableWrap" hidden>
+                <table class="admin-table" id="aisTable">
+                    <thead>
+                        <tr>
+                            <th>Label</th>
+                            <th>Provider</th>
+                            <th>Model</th>
+                            <th>Key</th>
+                            <th>Status</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="aisTableBody"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="ais-card ais-form-card" id="aisFormCard" hidden>
+            <div class="ais-card-header">
+                <div>
+                    <div class="ais-card-title" id="aisFormTitle">Add provider</div>
+                    <div class="ais-card-subtitle" id="aisFormSubtitle"></div>
+                </div>
+            </div>
+            <form id="aisForm" class="ais-form">
+                <div class="ais-form-grid">
+                    <div class="ais-field" id="aisPresetField">
+                        <label for="aisPreset">AI engine *</label>
+                        <select id="aisPreset"></select>
+                        <div class="ais-hint" id="aisPresetHint"></div>
+                    </div>
+                    <div class="ais-field">
+                        <label for="aisLabel">Label *</label>
+                        <input type="text" id="aisLabel" required maxlength="120">
+                        <div class="ais-hint">Lets you tell apart two saved keys for the same engine.</div>
+                    </div>
+                    <div class="ais-field" id="aisApiKeyField">
+                        <label for="aisApiKey">API key *</label>
+                        <input type="password" id="aisApiKey" autocomplete="off">
+                        <div class="ais-hint" id="aisApiKeyHint">Only the key is required for a listed engine.</div>
+                    </div>
+                </div>
+
+                <button type="button" class="ais-advanced-toggle" id="aisAdvancedToggle" hidden>
+                    Show advanced (model / endpoint)
+                </button>
+
+                <div class="ais-form-grid ais-advanced" id="aisAdvanced" hidden>
+                    <div class="ais-field">
+                        <label for="aisModel">Model</label>
+                        <input type="text" id="aisModel" class="mono" placeholder="e.g. qwen2.5-vl-72b-instruct">
+                        <div class="ais-hint">The exact model id this engine expects.</div>
+                    </div>
+                    <div class="ais-field" id="aisBaseUrlField">
+                        <label for="aisBaseUrl">Base URL</label>
+                        <input type="text" id="aisBaseUrl" class="mono" placeholder="https://.../v1">
+                        <div class="ais-hint">Leave blank to use the provider's real API.</div>
+                    </div>
+                </div>
+
+                <label class="ais-checkbox" id="aisActivateRow">
+                    <input type="checkbox" id="aisActivateNow" checked>
+                    Activate immediately after saving
+                </label>
+
+                <div class="ais-form-error" id="aisFormError" hidden></div>
+
+                <div class="ais-form-actions">
+                    <button type="button" class="admin-btn" id="aisCancelBtn">Cancel</button>
+                    <button type="submit" class="admin-btn ais-btn-primary" id="aisSubmitBtn">
+                        <span id="aisSubmitLabel">Save provider</span>
+                    </button>
+                </div>
+            </form>
+        </section>
+    </main>
+
+    <div class="admin-toast-container" id="adminToastContainer"></div>
+
+    <script src="/static/js/admin_ai_settings.js?v=1"></script>
+</body>
+</html>

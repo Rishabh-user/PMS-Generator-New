@@ -42,7 +42,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from app.config import settings
-from app.services import ai_service, class_resolver, pms_snapshot, pt_lookup, wt_calc
+from app.services import ai_provider, class_resolver, pms_snapshot, pt_lookup, wt_calc
 
 
 logger = logging.getLogger(__name__)
@@ -281,17 +281,30 @@ def _extract_filters_with_claude(prompt: str, history: list[dict]) -> dict:
     usage + per-call latency so the route can log them to
     `pms_agent_queries` for cost / perf monitoring. The route strips
     `_meta` before returning to the SPA."""
-    if not ai_service.is_available():
+    # Resolve (api_key, model) from the active admin-configured Anthropic
+    # provider (see /admin/ai-settings), falling back to the .env
+    # ANTHROPIC_API_KEY / ANTHROPIC_MODEL when no Anthropic-type provider
+    # is active — see ai_provider.resolve_anthropic_credentials(). This
+    # chat is a multi-turn, Anthropic-specific call site (history +
+    # prompt caching) that isn't restructured to run through non-Anthropic
+    # providers; activating an OpenAI / OpenAI-compatible provider in the
+    # settings page leaves this chat on the .env key unchanged.
+    creds = ai_provider.resolve_anthropic_credentials()
+    if creds is None:
         empty = _empty_extraction(
             "AI is not configured on this server. Ask the operator to set "
-            "ANTHROPIC_API_KEY in the backend .env."
+            "ANTHROPIC_API_KEY in the backend .env, or add an Anthropic "
+            "provider at /admin/ai-settings."
         )
         empty["_meta"] = {"model": None, "tokens_in": None, "tokens_out": None, "claude_ms": 0}
         return empty
+    api_key, model = creds
 
-    client = ai_service._client_or_none()  # noqa: SLF001
-    if client is None:
-        empty = _empty_extraction("AI client unavailable; check ANTHROPIC_API_KEY.")
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=api_key)
+    except Exception as e:  # noqa: BLE001
+        empty = _empty_extraction(f"AI client unavailable: {e}")
         empty["_meta"] = {"model": None, "tokens_in": None, "tokens_out": None, "claude_ms": 0}
         return empty
 
@@ -307,7 +320,7 @@ def _extract_filters_with_claude(prompt: str, history: list[dict]) -> dict:
     t0 = _time.perf_counter()
     try:
         response = client.messages.create(
-            model=settings.anthropic_model,
+            model=model,
             max_tokens=900,
             system=[{
                 "type": "text",
@@ -320,7 +333,7 @@ def _extract_filters_with_claude(prompt: str, history: list[dict]) -> dict:
         logger.exception("Claude slot-extraction failed")
         empty = _empty_extraction(f"AI request failed: {type(e).__name__}")
         empty["_meta"] = {
-            "model": settings.anthropic_model,
+            "model": model,
             "tokens_in": None,
             "tokens_out": None,
             "claude_ms": int((_time.perf_counter() - t0) * 1000),
@@ -331,7 +344,7 @@ def _extract_filters_with_claude(prompt: str, history: list[dict]) -> dict:
     parsed = _parse_extraction(raw)
     usage = getattr(response, "usage", None)
     parsed["_meta"] = {
-        "model": getattr(response, "model", settings.anthropic_model),
+        "model": getattr(response, "model", model),
         "tokens_in":  getattr(usage, "input_tokens", None) if usage else None,
         "tokens_out": getattr(usage, "output_tokens", None) if usage else None,
         "claude_ms": int((_time.perf_counter() - t0) * 1000),
