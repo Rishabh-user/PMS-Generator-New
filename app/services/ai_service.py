@@ -28,23 +28,6 @@ def is_available() -> bool:
     return ai_provider.resolve_active_provider() is not None
 
 
-def _client_or_none():
-    """Back-compat shim for callers that still reach into this module's
-    Anthropic client directly (see pms_agent_service.py). Returns an
-    Anthropic SDK client sourced from the same resolution order as
-    `is_available()`/`generate_pms_notes()`, or None."""
-    creds = ai_provider.resolve_anthropic_credentials()
-    if creds is None:
-        return None
-    api_key, _model = creds
-    try:
-        from anthropic import Anthropic
-        return Anthropic(api_key=api_key)
-    except Exception as e:  # noqa: BLE001
-        logger.error("Anthropic init failed: %s", e)
-        return None
-
-
 # System prompt is stable across calls so it's a perfect fit for prompt
 # caching — Anthropic charges far less for cached prefix tokens, which
 # keeps the per-request cost tiny once the session is warm.
