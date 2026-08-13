@@ -1,27 +1,26 @@
 """Provider-agnostic AI completion layer for the /admin/ai-settings page.
 
 Every provider adapter below (Anthropic / OpenAI / OpenAI-compatible)
-implements the same `.complete()` shape — one system prompt, one user
-turn, no history, no tool use. This matches what `generate_pms_notes`
-(Tab 5 AI Notes) needs and is what `test_provider()` uses to verify a
-key before it's ever saved or activated.
+implements the same `.complete_chat()` primitive — one system prompt,
+a list of {role, content} turns, no tool use. `.complete()` is a thin
+single-turn convenience wrapper over it. This one shape now powers
+BOTH AI call sites in this app:
+  • generate_pms_notes (Tab 5 AI Notes) — single-turn, via `.complete()`.
+  • pms_agent_service._extract_filters_with_ai (PMS-Agent chat slot
+    extraction) — multi-turn, via `.complete_chat()`, since the chat
+    passes prior conversation turns.
+Any saved provider — Anthropic, OpenAI, or an OpenAI-compatible engine
+(OpenRouter, DashScope, a self-hosted vLLM server, etc.) — can power
+either feature; there's nothing Anthropic-specific left at the call
+sites.
 
 Which provider is "active" is resolved from the ai_provider_configs
-table (admin-managed via /api/ai-settings) — see
+table (admin-managed via /admin/ai-settings) — see
 `resolve_active_provider()`. If no row is active (including before
 that table has ever been touched), this falls back to the .env
-ANTHROPIC_API_KEY / ANTHROPIC_MODEL, so behavior is unchanged unless
-an admin explicitly opts in.
-
-The PMS-Agent chat (pms_agent_service.py) is a separate, Anthropic-
-specific multi-turn call site (conversation history + prompt caching)
-that predates this abstraction and isn't restructured to go through
-`.complete()` here — re-engineering its JSON-extraction prompt for
-OpenAI-shaped multi-turn calls is out of scope. It still benefits from
-the admin settings page through `resolve_anthropic_credentials()`
-below: if the active provider is Anthropic, the chat uses that row's
-key/model; otherwise (a non-Anthropic provider is active, or none is)
-it falls back to today's .env values, unchanged.
+ANTHROPIC_API_KEY / ANTHROPIC_MODEL so the app still works out of the
+box; once an admin activates any provider from the settings page, that
+row is used instead and .env is no longer consulted.
 """
 from __future__ import annotations
 
@@ -48,10 +47,28 @@ class AIProviderError(RuntimeError):
 class AICompletion:
     text: str
     stop_reason: Optional[str]
+    # Usage isn't available from every provider/SDK in the same shape;
+    # left None when the adapter can't determine it. Consumed by
+    # pms_agent_service's per-call cost/perf logging (pms_agent_queries).
+    tokens_in: Optional[int] = None
+    tokens_out: Optional[int] = None
 
 
 class AIProvider(ABC):
+    provider: str
+    model: str
+
     @abstractmethod
+    def complete_chat(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[dict],
+        max_tokens: int,
+    ) -> AICompletion:
+        """Multi-turn completion: one system prompt + a list of
+        {role: 'user'|'assistant', content: str} turns."""
+
     def complete(
         self,
         *,
@@ -59,7 +76,12 @@ class AIProvider(ABC):
         user_text: str,
         max_tokens: int,
     ) -> AICompletion:
-        """Single-turn completion: one system prompt, one user turn."""
+        """Single-turn convenience wrapper over `complete_chat`."""
+        return self.complete_chat(
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": user_text}],
+            max_tokens=max_tokens,
+        )
 
 
 class AnthropicProvider(AIProvider):
@@ -78,7 +100,7 @@ class AnthropicProvider(AIProvider):
             self._client = Anthropic(api_key=self._api_key)
         return self._client
 
-    def complete(self, *, system_prompt, user_text, max_tokens):
+    def complete_chat(self, *, system_prompt, messages, max_tokens):
         client = self._client_()
         try:
             resp = client.messages.create(
@@ -89,14 +111,20 @@ class AnthropicProvider(AIProvider):
                     "text": system_prompt,
                     "cache_control": {"type": "ephemeral"},
                 }],
-                messages=[{"role": "user", "content": user_text}],
+                messages=messages,
             )
         except Exception as e:  # noqa: BLE001
             raise AIProviderError(str(e)) from e
         text = "".join(
             b.text for b in resp.content if getattr(b, "type", None) == "text"
         )
-        return AICompletion(text=text, stop_reason=getattr(resp, "stop_reason", None))
+        usage = getattr(resp, "usage", None)
+        return AICompletion(
+            text=text,
+            stop_reason=getattr(resp, "stop_reason", None),
+            tokens_in=getattr(usage, "input_tokens", None) if usage else None,
+            tokens_out=getattr(usage, "output_tokens", None) if usage else None,
+        )
 
 
 class OpenAIProvider(AIProvider):
@@ -120,24 +148,25 @@ class OpenAIProvider(AIProvider):
             self._client = OpenAI(api_key=self._api_key, base_url=self.base_url or None)
         return self._client
 
-    def complete(self, *, system_prompt, user_text, max_tokens):
+    def complete_chat(self, *, system_prompt, messages, max_tokens):
         client = self._client_()
+        full_messages = [{"role": "system", "content": system_prompt}, *messages]
         try:
             resp = client.chat.completions.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 temperature=0,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_text},
-                ],
+                messages=full_messages,
             )
         except Exception as e:  # noqa: BLE001
             raise AIProviderError(str(e)) from e
         choice = resp.choices[0]
+        usage = getattr(resp, "usage", None)
         return AICompletion(
             text=choice.message.content or "",
             stop_reason=getattr(choice, "finish_reason", None),
+            tokens_in=getattr(usage, "prompt_tokens", None) if usage else None,
+            tokens_out=getattr(usage, "completion_tokens", None) if usage else None,
         )
 
 
@@ -183,8 +212,21 @@ def _fetch_active_config_row() -> Optional[dict]:
 
 
 def resolve_active_provider() -> Optional[AIProvider]:
-    """The entry point single-turn call sites (AI Notes) use. Returns
-    None when no provider is usable at all."""
+    """The single entry point every AI call site uses — AI Notes
+    (single-turn, via `.complete()`) and the PMS-Agent chat (multi-turn,
+    via `.complete_chat()`) alike. Returns None when no provider is
+    usable at all.
+
+    Resolution order:
+      1. The active row in ai_provider_configs (any provider type —
+         Anthropic, OpenAI, or OpenAI-compatible), admin-managed at
+         /admin/ai-settings. Once any row is active, .env is no longer
+         consulted.
+      2. The .env ANTHROPIC_API_KEY / ANTHROPIC_MODEL fallback — only
+         reached when no row is active (or the DB/active row is
+         unusable), so the app still works before the settings page
+         has ever been touched.
+    """
     row = _fetch_active_config_row()
     if row is not None:
         try:
@@ -197,28 +239,4 @@ def resolve_active_provider() -> Optional[AIProvider]:
             )
     if settings.anthropic_api_key:
         return AnthropicProvider(api_key=settings.anthropic_api_key, model=settings.anthropic_model)
-    return None
-
-
-def resolve_anthropic_credentials() -> Optional[tuple[str, str]]:
-    """For the PMS-Agent chat's Anthropic-specific multi-turn call site
-    (pms_agent_service.py), which isn't restructured to go through
-    `.complete()` above. Returns (api_key, model) from the active
-    provider ONLY if it's an Anthropic-type row; otherwise (a non-
-    Anthropic provider is active, or none is, or the row is
-    undecryptable) falls back to the .env ANTHROPIC_API_KEY /
-    ANTHROPIC_MODEL, unchanged from before this module existed.
-    Returns None only when neither source has a usable key."""
-    row = _fetch_active_config_row()
-    if row is not None and row.get("provider") == "anthropic":
-        try:
-            api_key = decrypt_secret(row["api_key_encrypted"])
-            return api_key, (row.get("model") or DEFAULT_ANTHROPIC_MODEL)
-        except Exception as e:  # noqa: BLE001
-            log.warning(
-                "ai_provider: active anthropic config id=%s is unusable, falling back to .env: %s",
-                row.get("id"), e,
-            )
-    if settings.anthropic_api_key:
-        return settings.anthropic_api_key, settings.anthropic_model
     return None

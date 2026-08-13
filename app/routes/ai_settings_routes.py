@@ -1,7 +1,8 @@
 """Admin-managed AI provider configuration (Anthropic / OpenAI / OpenAI-
 compatible). See app.services.ai_provider for the completion layer this
-feeds; ai_provider.resolve_active_provider() / resolve_anthropic_credentials()
-are what the AI Notes and PMS-Agent chat features read at request time.
+feeds; ai_provider.resolve_active_provider() is what BOTH the AI Notes
+and PMS-Agent chat features read at request time — any saved provider
+type can power either feature.
 
 No backend auth — matches this project's existing /api/admin/* convention
 (see app/routes/admin_routes.py): the page is meant to sit behind a trusted
