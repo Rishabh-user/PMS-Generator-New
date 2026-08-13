@@ -18,3 +18,11 @@ httpx>=0.27,<1.0
 # datasheet workbook into a PDF without any system dependencies
 # (no LibreOffice / soffice required on the host).
 reportlab==4.2.5
+# OpenAI SDK — powers the "OpenAI" / "OpenAI-compatible" (Qwen /
+# OpenRouter / self-hosted vLLM etc.) branches of the AI provider
+# abstraction used by /admin/ai-settings (app/services/ai_provider.py).
+openai>=1.0,<2.0
+# Encrypts saved AI-provider API keys at rest (ai_provider_configs
+# table) — see app/services/crypto.py. Keyed by
+# AI_CREDENTIALS_ENCRYPTION_KEY in .env.
+cryptography>=42.0,<44.0

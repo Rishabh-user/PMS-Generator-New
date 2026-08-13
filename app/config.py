@@ -14,11 +14,20 @@ class Settings(BaseSettings):
     app_port: int = 8004
     log_level: str = "INFO"
 
-    # Anthropic Claude — used for AI engineering-notes generation on Tab 5.
-    # Optional: when unset the app falls back to the placeholder UI.
+    # Anthropic Claude — used for AI engineering-notes generation on Tab 5,
+    # and as the fallback credential for the PMS-Agent chat when no admin
+    # provider is active (see app/services/ai_provider.py). Optional: when
+    # unset the app falls back to the placeholder UI.
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
     anthropic_max_tokens: int = 2000
+
+    # Encrypts saved AI-provider API keys at rest in the ai_provider_configs
+    # table (managed from /admin/ai-settings). Generate one with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Required only to save/read providers from that admin page — the
+    # existing .env ANTHROPIC_API_KEY fallback above works without it.
+    ai_credentials_encryption_key: str = ""
 
     # PMS-Agent chat session persistence. When set, the SQL store uses
     # this Postgres URL. When empty the session endpoints return 503 and

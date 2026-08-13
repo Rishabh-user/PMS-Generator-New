@@ -1,49 +1,46 @@
-"""Anthropic Claude integration — AI-augmented engineering notes.
+"""AI-augmented engineering notes — provider-agnostic via app.services.ai_provider.
 
 Used by Tab 5 (Components & Notes) to generate context-aware engineering
 notes for the resolved PMS class. The deterministic engineering layer
 (stress, schedules, wall thickness) stays untouched — AI only augments
 human review with things an engineer might miss.
 
-The system prompt is marked for prompt caching so repeated calls during
-the same session are cheap. Optional graceful fallback when no API key
-is configured."""
+Which provider/key powers this call is resolved from the
+ai_provider_configs table (admin-managed at /admin/ai-settings) via
+`ai_provider.resolve_active_provider()`, falling back to the .env
+ANTHROPIC_API_KEY when no admin provider is active — see that module
+for the full resolution order."""
 from __future__ import annotations
 
 import json
 import logging
 import re
-from typing import Any, Optional
 
 from app.config import settings
+from app.services import ai_provider
 
 logger = logging.getLogger(__name__)
 
-# Lazy-init the SDK so the app starts even when the package isn't installed.
-_client: Any = None
-_init_error: Optional[str] = None
-
 
 def is_available() -> bool:
-    """True when ANTHROPIC_API_KEY is set (the SDK may still fail at runtime
-    if the key is invalid, but is_available is a quick gate for the UI)."""
-    return bool((settings.anthropic_api_key or "").strip())
+    """True when a usable provider is resolvable — either an active
+    admin-configured row, or the .env ANTHROPIC_API_KEY fallback."""
+    return ai_provider.resolve_active_provider() is not None
 
 
-def _client_or_none() -> Any:
-    global _client, _init_error
-    if not is_available():
+def _client_or_none():
+    """Back-compat shim for callers that still reach into this module's
+    Anthropic client directly (see pms_agent_service.py). Returns an
+    Anthropic SDK client sourced from the same resolution order as
+    `is_available()`/`generate_pms_notes()`, or None."""
+    creds = ai_provider.resolve_anthropic_credentials()
+    if creds is None:
         return None
-    if _client is not None:
-        return _client
-    if _init_error:
-        return None
+    api_key, _model = creds
     try:
-        from anthropic import Anthropic   # imported lazily — package optional
-        _client = Anthropic(api_key=settings.anthropic_api_key)
-        return _client
-    except Exception as e:                # ImportError or auth-time error
-        _init_error = str(e)
+        from anthropic import Anthropic
+        return Anthropic(api_key=api_key)
+    except Exception as e:  # noqa: BLE001
         logger.error("Anthropic init failed: %s", e)
         return None
 
@@ -84,45 +81,34 @@ Hard constraints — read carefully:
 
 def generate_pms_notes(state: dict) -> dict:
     """Generate engineering notes for a resolved PMS state. Returns:
-        {notes: [...], model: "...", usage: {...}}      on success
-        {error: "..."}                                  on failure
+        {notes: [...], model: "...", provider: "..."}    on success
+        {error: "..."}                                   on failure
     """
-    if not is_available():
-        return {"error": "ANTHROPIC_API_KEY not configured. Set it in .env to enable AI notes."}
-
-    client = _client_or_none()
-    if client is None:
-        return {"error": f"Anthropic client unavailable: {_init_error or 'unknown error'}"}
+    provider_obj = ai_provider.resolve_active_provider()
+    if provider_obj is None:
+        return {"error": "No AI provider configured. Set ANTHROPIC_API_KEY in .env, or add one at /admin/ai-settings."}
 
     user_prompt = _build_user_prompt(state)
 
     try:
-        response = client.messages.create(
-            model=settings.anthropic_model,
+        completion = provider_obj.complete(
+            system_prompt=_SYSTEM_PROMPT,
+            user_text=user_prompt,
             max_tokens=settings.anthropic_max_tokens,
-            system=[{
-                "type": "text",
-                "text": _SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{"role": "user", "content": user_prompt}],
         )
-    except Exception as e:
-        logger.exception("Anthropic API call failed")
+    except ai_provider.AIProviderError as e:
+        logger.exception("AI provider call failed")
+        return {"error": f"AI request failed: {e}"}
+    except Exception as e:  # noqa: BLE001
+        logger.exception("AI provider call failed")
         return {"error": f"AI request failed: {type(e).__name__}: {e}"}
 
-    raw = response.content[0].text if response.content else ""
-    notes = _parse_notes(raw)
+    notes = _parse_notes(completion.text)
 
     return {
         "notes": notes,
-        "model": getattr(response, "model", settings.anthropic_model),
-        "usage": {
-            "input_tokens":   getattr(response.usage, "input_tokens", None),
-            "output_tokens":  getattr(response.usage, "output_tokens", None),
-            "cache_read":     getattr(response.usage, "cache_read_input_tokens", None),
-            "cache_creation": getattr(response.usage, "cache_creation_input_tokens", None),
-        },
+        "model": getattr(provider_obj, "model", None),
+        "provider": getattr(provider_obj, "provider", None),
     }
 
 
